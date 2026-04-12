@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Welcome</title>
+</head>
+<body style="font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 40px;">
+<div style="max-width: 480px; margin: 0 auto; background: #ffffff;
+                border-radius: 8px; padding: 40px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+
+    <h2 style="color: #01696f;">Welcome aboard! 🎉</h2>
+
+    <p style="color: #666666;">
+        Hi <strong th:text="${username}">User</strong>,
+    </p>
+
+    <p style="color: #666666;">
+        Your account has been successfully created.
+        We're excited to have you on board!
+    </p>
+
+    <div style="background-color: #f0f9f9; border-radius: 6px;
+                    padding: 16px; margin: 24px 0;">
+        <p style="margin: 0; color: #333333;">
+            📧 <strong>Email:</strong>
+            <span th:text="${email}">user@example.com</span>
+        </p>
+    </div>
+
+    <p style="color: #666666;">
+        You can now log in and start using the app.
+    </p>
+
+    <p style="color: #999999; font-size: 12px; margin-top: 32px;">
+        If you did not create this account, please contact us immediately.
+    </p>
+</div>
+</body>
+</html>

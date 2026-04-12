@@ -1,0 +1,77 @@
+# ===== MAVEN =====
+HELP.md
+target/
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# ===== ENVIRONMENT & SECRETS =====
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+
+# ===== LOGS =====
+*.log
+logs/
+log/
+spring.log
+
+# ===== JAVA =====
+*.class
+hs_err_pid*
+replay_pid*
+
+# ===== IDE: IntelliJ IDEA =====
+.idea/
+*.iws
+*.iml
+*.ipr
+out/
+
+# ===== IDE: STS / Eclipse =====
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+.cache-main
+.scala_dependencies
+.worksheet
+
+# ===== IDE: NetBeans =====
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+# ===== IDE: VS Code =====
+.vscode/
+
+# ===== OS =====
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# ===== DOCKER =====
+docker-compose.override.yml
