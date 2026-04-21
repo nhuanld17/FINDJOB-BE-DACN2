@@ -1,9 +1,10 @@
 package com.example.boilerplate.common.exception;
 
+import com.example.boilerplate.common.constant.ErrorCode;
 import com.example.boilerplate.common.response.ErrorResponse;
+import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
@@ -29,9 +30,10 @@ public class GlobalExceptionHandler {
     public ResponseEntity<?> handleMethodArgumentNotValid(MethodArgumentNotValidException ex) {
         Map<String, List<String>> errors = new HashMap<>();
 
-        ex.getBindingResult().getFieldErrors().forEach((fieldError) -> {
+        ex.getBindingResult().getFieldErrors().forEach(fieldError -> {
+            String resolved = resolveValidationMessage(fieldError);
             errors.computeIfAbsent(fieldError.getField(), k -> new ArrayList<>());
-            errors.get(fieldError.getField()).add(fieldError.getDefaultMessage());
+            errors.get(fieldError.getField()).add(resolved);
         });
 
         return ResponseEntity
@@ -43,15 +45,35 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ConstraintViolationException.class)
     public ResponseEntity<?> handleConstraintViolation(ConstraintViolationException ex) {
         Map<String, List<String>> errors = new HashMap<>();
-        ex.getConstraintViolations().forEach((constraintViolation) -> {
-            String field = constraintViolation.getPropertyPath().toString();
+
+        ex.getConstraintViolations().forEach(violation -> {
+            String field = violation.getPropertyPath().toString();
+            // Dùng resolveEnumKey thay vì raw message
+            String resolved = resolveEnumKey(
+                    violation.getMessage(),
+                    violation.getConstraintDescriptor().getAttributes()
+            );
             errors.computeIfAbsent(field, k -> new ArrayList<>());
-            errors.get(field).add(constraintViolation.getMessage());
+            errors.get(field).add(resolved);
         });
 
         return ResponseEntity
                 .badRequest()
                 .body(ErrorResponse.ofValidation(errors));
+    }
+
+    // AppException — business logic errors
+    @ExceptionHandler(AppException.class)
+    public ResponseEntity<?> handleAppException(AppException ex) {
+        log.warn("AppException [{}]: {}", ex.getErrorCode(), ex.getMessage());
+        ErrorCode errorCode = ex.getErrorCode();
+        return ResponseEntity
+                .status(errorCode.getHttpStatusCode())
+                .body(ErrorResponse.of(
+                        errorCode.getHttpStatusCode().value(), // 404, 409, 401...
+                        errorCode.getCode(),               // 2001, 2002, 3001...
+                        ex.getMessage()
+                ));
     }
 
     // Wrong data type on @PathVariable / @RequestParam (ex: pass "abc" into Long id)
@@ -72,57 +94,89 @@ public class GlobalExceptionHandler {
     // Missing required @RequestParam
     @ExceptionHandler(MissingServletRequestParameterException.class)
     public ResponseEntity<?> handleMissingParameter(MissingServletRequestParameterException ex) {
-        String message = "Missing parameter '%s'".format(ex.getParameterName());
+        String message = "Missing parameter '%s'".formatted(ex.getParameterName());
 
         return ResponseEntity
-                .badRequest().body(ErrorResponse.of(400, message));
+                .badRequest()
+                .body(ErrorResponse.of(400, message));
     }
 
     // 401 - Not login yet
     @ExceptionHandler(AuthenticationException.class)
     public ResponseEntity<?> handleAuthenticationException(AuthenticationException ex) {
+        // ✅ Không expose ex.getMessage() — dùng message từ ErrorCode
+        ErrorCode errorCode = ErrorCode.UNAUTHENTICATED;
         return ResponseEntity
-                .status(HttpStatus.UNAUTHORIZED)
-                .body(ErrorResponse.of(401, ex.getMessage()));
+                .status(errorCode.getHttpStatusCode())
+                .body(ErrorResponse.of(errorCode.getCode(), errorCode.getMessage()));
     }
 
     // 403 - Access Denied
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<?> handleAccessDeniedException(AccessDeniedException ex) {
+        ErrorCode errorCode = ErrorCode.ACCESS_DENIED;
         return ResponseEntity
-                .status(HttpStatus.FORBIDDEN)
-                .body(ErrorResponse.of(403, "Access Denied"));
+                .status(errorCode.getHttpStatusCode())
+                .body(ErrorResponse.of(errorCode.getCode(), errorCode.getMessage()));
     }
 
     // 404 — URL does not exist
     @ExceptionHandler(NoResourceFoundException.class)
     public ResponseEntity<?> handleNoResourceFound(NoResourceFoundException ex) {
         return ResponseEntity
-                .status(HttpStatus.NOT_FOUND)
+                .status(404)
                 .body(ErrorResponse.of(404, "Resource not found"));
     }
 
-    // 405 — Wrong HTTP method (vd: call GET instead of POST)
+    // 405 — Wrong HTTP method
     @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
-    public ResponseEntity<?> handleMethodNotAllowed(
-            HttpRequestMethodNotSupportedException ex) {
-
+    public ResponseEntity<?> handleMethodNotAllowed(HttpRequestMethodNotSupportedException ex) {
         String message = "Method '%s' is not allowed for this endpoint"
                 .formatted(ex.getMethod());
 
         return ResponseEntity
-                .status(HttpStatus.METHOD_NOT_ALLOWED)
+                .status(405)
                 .body(ErrorResponse.of(405, message));
     }
 
-    // Fallback — All undefined error, log to debug but not expose to client
+    // Fallback — All undefined errors, log but not expose detail to client
     @ExceptionHandler(Exception.class)
     public ResponseEntity<?> handleGeneral(Exception ex) {
         log.error("Unhandled exception: ", ex);
+        // Dùng ErrorCode thay vì hardcode 500
+        ErrorCode errorCode = ErrorCode.INTERNAL_ERROR;
         return ResponseEntity
-                .status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(ErrorResponse.of(500, "Internal server error"));
+                .status(errorCode.getHttpStatusCode())
+                .body(ErrorResponse.of(errorCode.getCode(), errorCode.getMessage()));
     }
 
-    // Custom Exception Here
+    // ===== Helpers =====
+
+    private String resolveValidationMessage(org.springframework.validation.FieldError fieldError) {
+        String raw = fieldError.getDefaultMessage();
+        try {
+            ErrorCode errorCode = ErrorCode.valueOf(raw);
+            try {
+                ConstraintViolation<?> violation = fieldError.unwrap(ConstraintViolation.class);
+                return resolveEnumKey(errorCode.getMessage(), violation.getConstraintDescriptor().getAttributes());
+            } catch (Exception ignored) {}
+            return errorCode.getMessage();
+        } catch (IllegalArgumentException e) {
+            log.warn("Non-enum validation message: '{}'", raw);
+            return raw; // fallback: trả thẳng raw string
+        }
+    }
+
+    private String resolveEnumKey(String raw, Map<String, Object> attributes) {
+        try {
+            ErrorCode errorCode = ErrorCode.valueOf(raw);
+            String message = errorCode.getMessage();
+            for (Map.Entry<String, Object> entry : attributes.entrySet()) {
+                message = message.replace("{" + entry.getKey() + "}", String.valueOf(entry.getValue()));
+            }
+            return message;
+        } catch (IllegalArgumentException e) {
+            return raw;
+        }
+    }
 }
