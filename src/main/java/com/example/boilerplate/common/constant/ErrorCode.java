@@ -10,7 +10,15 @@ public enum ErrorCode {
     // ===== Auth =====
     UNAUTHENTICATED(3001, "Unauthenticated", HttpStatus.UNAUTHORIZED),
     ACCESS_DENIED(3002, "Access denied", HttpStatus.FORBIDDEN),
-
+    OTP_VERIFICATION_SESSION_EXPIRED(3003, "OTP verification session expired", HttpStatus.FORBIDDEN),
+    MAX_WRONG_OTP(3004, "OTP Wrong too many time", HttpStatus.TOO_MANY_REQUESTS),
+    OTP_EXPIRED(3005, "OTP is expired or not true", HttpStatus.BAD_REQUEST),
+    OTP_INVALID(3006, "OTP is not true", HttpStatus.BAD_REQUEST),
+    COOLDOWN_ACTIVE(3007, "Cooldown is active", HttpStatus.BAD_REQUEST),
+    INVALID_CREDENTIALS(3008, "Invalid credentials", HttpStatus.UNAUTHORIZED),
+    UNAUTHORIZED(3009, "Unauthorized", HttpStatus.UNAUTHORIZED),
+    OTP_VERIFY_LIMIT_REACHED(3010, "OTP verify is blocked because send limit was exceeded", HttpStatus.TOO_MANY_REQUESTS),
+    
 
     // ===== Validation =====
     BLANK_FIELD(1001, "Field cannot be blank", HttpStatus.BAD_REQUEST),
@@ -19,6 +27,7 @@ public enum ErrorCode {
     INVALID_USERNAME(1004, "Username must be between {min} and {max} characters", HttpStatus.BAD_REQUEST),
     INVALID_USERNAME_FORMAT(1005, "Username can only contain letters, numbers, and underscores", HttpStatus.BAD_REQUEST),
     INVALID_PASSWORD(1006, "Password must be at least {min} characters", HttpStatus.BAD_REQUEST),
+    OTP_OUT_OF_SIZE(1007, "OTP must be 6 characters", HttpStatus.BAD_REQUEST),
 
     // ===== User / Auth =====
     USER_NOT_FOUND(2001, "User not found", HttpStatus.NOT_FOUND),
@@ -26,9 +35,8 @@ public enum ErrorCode {
     USERNAME_ALREADY_IN_USE(2003, "Username already in use", HttpStatus.CONFLICT),
     PASSWORD_MISMATCH(2004, "Password and confirm password does not match", HttpStatus.BAD_REQUEST),
     USER_INACTIVE(2005, "User account is inactive", HttpStatus.FORBIDDEN),
-    INVALID_CREDENTIALS(2006, "Invalid username or password", HttpStatus.UNAUTHORIZED),
     ACCOUNT_BANNED(2007, "An account using this email was banned", HttpStatus.FORBIDDEN),
-    TOO_MANY_OTP_ATTEMPTS(2008, "OTP was resend too many time", HttpStatus.TOO_MANY_REQUESTS),
+    OTP_SEND_LIMIT_REACHED(2008, "OTP was resend too many time", HttpStatus.TOO_MANY_REQUESTS),
     RESEND_OTP_BLOCKED(2009,"Resend OTP blocked" ,HttpStatus.CONFLICT ),
 
     // ===== System =====

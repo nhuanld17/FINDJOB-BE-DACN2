@@ -15,11 +15,27 @@ import java.util.Optional;
 public interface UserRepository extends JpaRepository<User,Long> {
     Optional<User> findByEmail(String email);
 
+    @Query("""
+        SELECT distinct u
+        FROM User u
+        LEFT JOIN FETCH u.roles
+        WHERE u.email = :email
+    """)
+    Optional<User> findByEmailWithRoles(@Param("email") String email);
+
+    @Query("""
+        SELECT distinct u
+        FROM User u
+        LEFT JOIN FETCH u.roles
+        WHERE u.id = :id
+    """)
+    Optional<User> findByIdWithRoles(@Param("id") Long id);
+
     /**
      * Kiểm tra có active account nào đã dùng email này chưa
      */
     @Query("""
-        SELECT 1
+        SELECT (count(u) > 0)
         FROM User u
         WHERE u.email = :email and u.isActive = true and u.deleted = false
     """)
@@ -31,14 +47,14 @@ public interface UserRepository extends JpaRepository<User,Long> {
      * @return true nếu có 1 tài khoản sử dụng email này rồi và đã bị ban (is_deleted = true)
      */
     @Query("""
-        SELECT 1
+        SELECT (count(u) > 0)
         FROM User u
         WHERE u.email = :email and u.isActive = true and u.deleted = true
     """)
     boolean isEmailBanned(@Param("email") String email);
 
     @Query("""
-        SELECT 1
+        SELECT (count(u) > 0)
         FROM User u
         WHERE u.email = :email and u.isActive = false and u.deleted = false
     """)
@@ -52,7 +68,7 @@ public interface UserRepository extends JpaRepository<User,Long> {
      * với username đăng kí
      */
     @Query("""
-        SELECT 1
+        SELECT (count(u) > 0)
         FROM User u
         WHERE u.email <> :email and u.username = :username
     """)

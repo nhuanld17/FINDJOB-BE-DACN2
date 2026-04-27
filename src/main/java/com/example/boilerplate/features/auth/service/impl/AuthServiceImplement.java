@@ -1,17 +1,29 @@
 package com.example.boilerplate.features.auth.service.impl;
 
 import com.example.boilerplate.common.constant.ErrorCode;
+import com.example.boilerplate.common.constant.RoleEnum;
 import com.example.boilerplate.common.exception.AppException;
+import com.example.boilerplate.features.auth.dto.request.LoginRequest;
 import com.example.boilerplate.features.auth.dto.request.RegisterRequest;
+import com.example.boilerplate.features.auth.dto.request.VerifyOtpRequest;
+import com.example.boilerplate.features.auth.dto.response.AuthResponse;
 import com.example.boilerplate.features.auth.service.AuthService;
 import com.example.boilerplate.features.auth.service.OtpService;
 import com.example.boilerplate.features.user.entity.User;
+import com.example.boilerplate.features.user.repository.RoleRepository;
 import com.example.boilerplate.features.user.repository.UserRepository;
 import com.example.boilerplate.infrastructure.mail.EmailService;
 import com.example.boilerplate.infrastructure.redis.RedisService;
+import com.example.boilerplate.infrastructure.security.CustomUserDetails;
+import com.example.boilerplate.infrastructure.security.JwtUtil;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseCookie;
+import org.springframework.security.authentication.*;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,25 +39,28 @@ public class AuthServiceImplement implements AuthService {
 
     private final RedisService redisService;
     private final UserRepository userRepository;
+    private final RoleRepository roleRepository;
     private final PasswordEncoder passwordEncoder;
     private final EmailService emailService;
     private final OtpService otpService;
+    private final AuthenticationManager authenticationManager;
+    private final JwtUtil jwtUtil;
 
     @Override
     @Transactional
     public void register(RegisterRequest request, HttpServletResponse response, String pendingToken) {
 
-        // password and confirm password miss match
+        // Kiểm tra mật khẩu và mật khẩu xác nhận có khớp không
         if (!request.password().trim().equals(request.confirmPassword().trim())) {
             throw new AppException(ErrorCode.PASSWORD_MISMATCH);
         }
 
-        // email was used by an active account
+        // Email đã được dùng bởi tài khoản đang hoạt động
         if (userRepository.isEmailAlreadyInUse(request.email().trim().toLowerCase())) {
             throw new AppException(ErrorCode.EMAIL_ALREADY_IN_USE);
         }
 
-        // email was used by an banned account
+        // Email thuộc tài khoản bị khóa
         if (userRepository.isEmailBanned(request.email().trim().toLowerCase())) {
             throw new AppException(ErrorCode.ACCOUNT_BANNED);
         }
@@ -53,15 +68,14 @@ public class AuthServiceImplement implements AuthService {
         String username = request.username().trim();
         String email = request.email().trim().toLowerCase();
 
-        // Check whether new username was used by another account
+        // Username đã được dùng bởi tài khoản khác
         if (userRepository.isUserNameAlreadyInUse(username, email)) {
             throw new AppException(ErrorCode.USERNAME_ALREADY_IN_USE);
         }
 
         User user;
 
-        // email was used by an inactive account - (account that have not verified otp yet)
-        // update new information for old record
+        // Nếu email thuộc tài khoản chưa kích hoạt thì cập nhật lại thông tin
         if (userRepository.isInactiveAccount(email)) {
             user = userRepository.findByEmail(email).orElseThrow(
                     () -> new AppException(ErrorCode.EMAIL_ALREADY_IN_USE)
@@ -74,7 +88,7 @@ public class AuthServiceImplement implements AuthService {
             user.setDeleted(false);
             userRepository.save(user);
         }
-        // Create new user
+        // Nếu chưa có tài khoản thì tạo mới
         else  {
             user = new User();
             user.setUsername(username);
@@ -86,19 +100,24 @@ public class AuthServiceImplement implements AuthService {
             userRepository.save(user);
         }
 
-        // ========= Create & Send OTP ==========
+        // ======== Tạo và gửi OTP ========
 
-        // if the number of OTP attempts exceeds 5 -> block sending otp
-        // user need to wait for 1h-window end to receive new otp code
-        if (otpService.isAttemptBlocked(user.getId())) {
-            throw new AppException(ErrorCode.TOO_MANY_OTP_ATTEMPTS);
+        /**
+         * Nếu số lần gửi OTP trong cửa sổ 1 giờ đã chạm ngưỡng 5:
+         * - Block resend otp, nhưng vẫn giữ key redis trong trường
+         * hợp người dùng vẫn còn lượt nhập
+         */
+
+        if (otpService.getAttempts(user.getId()) >= 5) {
+            // otpService.clearOtpSessionKeepAttempts(user.getId(), pendingToken);
+            // clearPendingCookie(response);
+            throw new AppException(ErrorCode.OTP_SEND_LIMIT_REACHED);
         }
 
-        // Get cooldown ttl of user
+        // Lấy thời gian cooldown còn lại (đơn vị giây)
         long cooldownTTl = otpService.getCooldownTtl(user.getId());
 
-        // if still within cooldown period -> No new otp created
-        // resend pending token for user
+        // Nếu còn cooldown thì không tạo OTP mới, chỉ gia hạn và trả lại pending token
         if (cooldownTTl > 0) {
             // Get pending token from redis and send to client, while also renewing
             // TTL for both pending token and reverse token
@@ -112,8 +131,11 @@ public class AuthServiceImplement implements AuthService {
         }
 
         /**
-         * When cooldown ended and user did not exceed attempts threshold
-         * System provides new otp: rotate pending token, create new otp and send to user's email
+         * Khi đã hết cooldown và chưa vượt ngưỡng attempts:
+         * - Cấp/rotate pending token mới
+         * - Tạo OTP mới và lưu vào Redis
+         * - Cập nhật cooldown, attempts, wrong
+         * - Gửi OTP qua email
          */
         String token = rotatePendingToken(user.getId());
         writePendingCookie(response, token);
@@ -135,6 +157,350 @@ public class AuthServiceImplement implements AuthService {
 
         // Gửi emai thông báo
         emailService.sendOtpEmail(email, username, otp);
+    }
+
+    @Override
+    @Transactional
+    public void verifyOtp(VerifyOtpRequest request, String pendingToken, HttpServletResponse httpServletResponse) {
+
+        // Kiểm tra pendingToken từ Cookie, nếu không có token, phiên verify đã hết hạn
+        if ( pendingToken == null || pendingToken.isBlank()) {
+            throw new AppException(ErrorCode.OTP_VERIFICATION_SESSION_EXPIRED);
+        }
+
+        // Kiểm tra pending:{token} để lấy userId
+        // Nếu không tra ra userId: token đã hết hạn hoặc không hợp lệ. Xóa cookie
+        // Pending rồi trả về OTP_VERIFICATION_SESSION_EXPIRED
+        String userId = redisService.getString("pending:" + pendingToken);
+        if (userId == null || userId.isBlank()) {
+            clearPendingCookie(httpServletResponse);
+            throw new AppException(ErrorCode.OTP_VERIFICATION_SESSION_EXPIRED);
+        }
+
+        Long uid;
+
+        try {
+
+            uid = Long.parseLong(userId);
+        } catch (NumberFormatException e) {
+            // nếu userId không hợp lệ thì xóa pendingCoookie
+            // Nhưng ko xóa các key redis khác vì chưa xác minh được user là ai
+            clearPendingCookie(httpServletResponse);
+            throw new AppException(ErrorCode.OTP_VERIFICATION_SESSION_EXPIRED);
+        }
+
+        // Nếu số lần gửi OTP đã vượt quá ngưỡng 5 trong cửa sổ 1 giờ thì chặn
+        // resend , những vẫn giữ key redis trong trường hợp người dùng vẫn
+        // còn lượt nhập otp
+        if (otpService.getAttempts(uid) > 5) {
+            // Xóa các key redis, chỉ giữ lại otp:attempts:{userId} để nếu user đăng kí lại
+            // thì có thể đối chiếu để chặn gửi otp
+            // otpService.clearOtpSessionKeepAttempts(uid, pendingToken);
+            // Xóa pending cookie ở phía client
+            // clearPendingCookie(httpServletResponse);
+
+            throw new AppException(ErrorCode.OTP_VERIFY_LIMIT_REACHED);
+        }
+
+        // Nếu số lần nhập sai hiện tại quá 5 lần thì block
+        if (otpService.getWrong(uid) >= 5) {
+            throw new AppException(ErrorCode.MAX_WRONG_OTP);
+        }
+
+        String otp = otpService.getOtp(uid);
+
+        // Kiểm tra otp còn hạn hay không
+        if (otp == null || otp.isBlank()) {
+            throw new AppException(ErrorCode.OTP_EXPIRED);
+        }
+
+        // Kiểm tra dữ liệu otp từ request trước khi so sánh
+        if (request == null || request.otp() == null || request.otp().isBlank()) {
+            throw new AppException(ErrorCode.OTP_INVALID);
+        }
+
+        // Nếu otp từ request không đúng thì tăng wrong counter
+        // và trả lỗi OTP invalid
+        if (!otp.equals(request.otp().trim())) {
+            otpService.incrementWrong(uid);
+            throw new AppException(ErrorCode.OTP_INVALID);
+        }
+
+        // Nếu otp đúng thì đổi trạng thái của user sang activate=true
+        User user = userRepository.findByIdWithRoles(uid).orElseThrow(
+                () -> new AppException(ErrorCode.USER_NOT_FOUND)
+        );
+
+        // Gán ROLE_USER mặc định khi verify thành công (nếu user chưa có role này)
+        boolean hasUserRole = user.getRoles().stream()
+            .anyMatch(role -> role.getName() == RoleEnum.USER);
+        if (!hasUserRole) {
+            var defaultRole = roleRepository.findByName(RoleEnum.USER)
+                .orElseThrow(() -> new AppException(ErrorCode.INTERNAL_ERROR));
+            user.getRoles().add(defaultRole);
+        }
+
+        user.setActive(true);
+        userRepository.save(user);
+
+        // Dọn state otp sau khi verify thành công
+        otpService.clearAll(user.getId());
+        // Extra safety: ensure current pending token key is removed even if reverse index was stale.
+        redisService.delete("pending:" + pendingToken);
+        redisService.delete("pending:user:" + uid);
+        // Xóa pending cookie ở client
+        clearPendingCookie(httpServletResponse);
+    }
+
+    @Override
+    public void resendOtp(String pendingToken, HttpServletResponse httpServletResponse) {
+        // Nếu pendingToken từ request không có => Hết phiên OTP
+        if (pendingToken == null || pendingToken.isBlank()) {
+            throw new AppException(ErrorCode.OTP_VERIFICATION_SESSION_EXPIRED);
+        }
+
+        Long uid;
+
+        // Lấy userId của pendingToken hiện tại
+        try {
+            String userId = redisService.getString("pending:" + pendingToken);
+
+            if (userId == null || userId.isBlank()) {
+                clearPendingCookie(httpServletResponse);
+                throw new AppException(ErrorCode.OTP_VERIFICATION_SESSION_EXPIRED);
+            }
+
+            uid = Long.parseLong(userId);
+
+        } catch (NumberFormatException e) {
+            clearPendingCookie(httpServletResponse);
+            throw new AppException(ErrorCode.OTP_VERIFICATION_SESSION_EXPIRED);
+        }
+
+        // Kiểm tra cooldown, nếu còn cooldown thì chặn resend
+        if (otpService.getCooldownTtl(uid) > 0) {
+            throw new AppException(ErrorCode.COOLDOWN_ACTIVE);
+        }
+
+        // Kiểm tra attempts
+        if (otpService.getAttempts(uid) >= 5) {
+//            clearPendingCookie(httpServletResponse);
+//            otpService.clearOtpSessionKeepAttempts(uid, pendingToken);
+            throw new AppException(ErrorCode.OTP_SEND_LIMIT_REACHED);
+        }
+
+        // Tạo mã otp mới
+        String otp = otpService.generateOtp();
+
+        // Reset TTL của otp:{userId} với TTL 5 phút
+        otpService.saveOtp(uid, otp);
+        // Set cooldown cho otp hiện tại về 60s
+        otpService.setCooldown(uid);
+        // Reset wrong về 0
+        otpService.resetWrong(uid);
+        // Tăng số lần gửi otp thêm 1
+        otpService.incrementAttempts(uid);
+
+        // Sau khi có otp mới thì rotate pendingToken để đồng bộ Redis + cookie
+        String newPendingToken = rotatePendingToken(uid);
+        writePendingCookie(httpServletResponse, newPendingToken);
+
+        // Gửi email cho user
+        User user = userRepository.findById(uid).orElseThrow(
+                () -> new AppException(ErrorCode.USER_NOT_FOUND)
+        );
+
+        emailService.sendOtpEmail(user.getEmail(), user.getUsername(), otp);
+    }
+
+    @Override
+    @Transactional
+    public AuthResponse login(LoginRequest request, HttpServletResponse httpServletResponse, String pendingToken) {
+
+        // Chuẩn hóa email và password
+        String email = request.email().trim().toLowerCase();
+        String password = request.password().trim();
+
+        UsernamePasswordAuthenticationToken usernamePasswordAuthenticationToken =
+                new UsernamePasswordAuthenticationToken(email, password);
+
+        try {
+            Authentication authenticatedToken = authenticationManager.authenticate(usernamePasswordAuthenticationToken);
+
+            // Đặt authentication vào securitycontext
+            SecurityContextHolder.getContext().setAuthentication(authenticatedToken);
+
+        } catch (DisabledException e) {
+            handleInactiveUserLogin(email, httpServletResponse, pendingToken);
+            throw new AppException(ErrorCode.USER_INACTIVE);
+
+        } catch (LockedException e) {
+            throw new AppException(ErrorCode.ACCOUNT_BANNED);
+
+        } catch (BadCredentialsException e) {
+            throw new AppException(ErrorCode.INVALID_CREDENTIALS);
+
+        } catch (AuthenticationException e) {
+            throw new AppException(ErrorCode.UNAUTHENTICATED);
+        }
+
+        User user = userRepository.findByEmail(email).orElseThrow(
+                () -> new AppException(ErrorCode.USER_NOT_FOUND)
+        );
+
+        UserDetails userDetails = (UserDetails) SecurityContextHolder.getContext()
+                                    .getAuthentication().getPrincipal();
+
+        // Tạo accessToken và refreshToken dựa trên thông tin của User
+        String accessToken = jwtUtil.generateAccessToken(userDetails);
+        String refreshToken = jwtUtil.generateRefreshToken(userDetails);
+
+        // Lưu refreshtoken vào redis
+        String refreshKey = "auth:refresh:" + user.getId();
+        redisService.set(refreshKey, refreshToken, 7, TimeUnit.DAYS);
+
+        // Thêm refreshToken vào cookie HttpOnly
+        writeRefreshCookie(httpServletResponse, refreshToken);
+
+        return new AuthResponse(
+                user.getUsername(),
+                user.getRoles(),
+                accessToken
+        );
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public AuthResponse refreshToken(String refreshToken, HttpServletResponse httpServletResponse) {
+        if (refreshToken == null || refreshToken.isBlank()) {
+            clearRefreshTokenCookie(httpServletResponse);
+            throw new AppException(ErrorCode.UNAUTHORIZED);
+        }
+
+        String email;
+        try {
+            email = jwtUtil.extractUsername(refreshToken);
+        } catch (Exception e) {
+            clearRefreshTokenCookie(httpServletResponse);
+            throw new AppException(ErrorCode.UNAUTHORIZED);
+        }
+
+        User user = userRepository.findByEmailWithRoles(email)
+                .orElseThrow(() -> new AppException(ErrorCode.USER_NOT_FOUND));
+
+        if (user.isDeleted()) {
+            clearRefreshTokenCookie(httpServletResponse);
+            throw new AppException(ErrorCode.ACCOUNT_BANNED);
+        }
+
+        if (!user.isActive()) {
+            clearRefreshTokenCookie(httpServletResponse);
+            throw new AppException(ErrorCode.USER_INACTIVE);
+        }
+
+        // UserDetails userDetails = new CustomUserDetails(user);
+        CustomUserDetails userDetails = new CustomUserDetails(user);
+
+        if (!jwtUtil.isTokenValid(refreshToken, userDetails)) {
+            clearRefreshTokenCookie(httpServletResponse);
+            throw new AppException(ErrorCode.UNAUTHORIZED);
+        }
+
+        String refreshKey = "auth:refresh:" + user.getId();
+        String storedRefreshToken = redisService.getString(refreshKey);
+
+        if (storedRefreshToken == null || !storedRefreshToken.equals(refreshToken)) {
+            clearRefreshTokenCookie(httpServletResponse);
+            throw new AppException(ErrorCode.UNAUTHORIZED);
+        }
+
+        // Cấp access token mới
+        String newAccessToken = jwtUtil.generateAccessToken(userDetails);
+
+        // Rotate refresh token để đồng bộ TTL Redis với exp bên trong JWT
+        String newRefreshToken = jwtUtil.generateRefreshToken(userDetails);
+        redisService.set(refreshKey, newRefreshToken, 7, TimeUnit.DAYS);
+        writeRefreshCookie(httpServletResponse, newRefreshToken);
+
+        return new AuthResponse(
+                user.getUsername(),
+                user.getRoles(),
+                newAccessToken
+        );
+    }
+
+    /**
+     * Logout is implemented as server-side refresh token revocation:
+     * - Always clears refreshToken cookie (idempotent).
+     * - If refreshToken is present and valid, delete the stored refresh token in Redis.
+     *
+     * Access tokens are stateless JWTs; we do not keep a blacklist here.
+     */
+    @Override
+    public void logout(String refreshToken, HttpServletResponse httpServletResponse) {
+        // Always clear cookie even if token is missing/invalid.
+        clearRefreshTokenCookie(httpServletResponse);
+
+        if (refreshToken == null || refreshToken.isBlank()) {
+            return;
+        }
+
+        String email;
+        try {
+            email = jwtUtil.extractUsername(refreshToken);
+        } catch (Exception e) {
+            // Malformed/expired/invalid signature -> still treat as logged out.
+            return;
+        }
+
+        userRepository.findByEmail(email).ifPresent(user -> {
+            String refreshKey = "auth:refresh:" + user.getId();
+            redisService.delete(refreshKey);
+        });
+    }
+
+    private void writeRefreshCookie(HttpServletResponse httpServletResponse, String refreshToken) {
+        ResponseCookie refreshCookie = ResponseCookie.from("refreshToken", refreshToken)
+                .httpOnly(true)
+                .secure(true)
+                .path("/")
+                .maxAge(7 * 24 * 60 * 60) // 7 ngày
+                .build();
+
+        httpServletResponse.addHeader("Set-Cookie", refreshCookie.toString());
+    }
+
+    private void handleInactiveUserLogin(String email, HttpServletResponse httpServletResponse, String pendingToken) {
+        // Tìm user theo email
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new AppException(ErrorCode.USER_NOT_FOUND));
+
+        Long userId = user.getId();
+
+        // Kiểm tra attempts: Nếu đã đạt 5 lần gửi OTP thì chặn gửi mới
+        if (otpService.getAttempts(userId) >= 5) {
+            throw new AppException(ErrorCode.OTP_SEND_LIMIT_REACHED);
+        }
+
+        // 2) Check cooldown sau
+        long cooldownTtl = otpService.getCooldownTtl(userId);
+        if (cooldownTtl > 0) {
+            String token = resolveOrCreatePendingToken(userId, pendingToken);
+            writePendingCookie(httpServletResponse, token);
+            return;
+        }
+
+        // 3) Không bị block thì phát OTP mới
+        String token = rotatePendingToken(userId);
+        writePendingCookie(httpServletResponse, token);
+
+        String otp = otpService.generateOtp();
+        otpService.saveOtp(userId, otp);
+        otpService.setCooldown(userId);
+        otpService.incrementAttempts(userId);
+        otpService.resetWrong(userId);
+
+        emailService.sendOtpEmail(user.getEmail(), user.getUsername(), otp);
     }
 
     private String rotatePendingToken(Long id) {
@@ -164,26 +530,55 @@ public class AuthServiceImplement implements AuthService {
     }
 
     private String resolveOrCreatePendingToken(Long id, String pendingToken) {
-
+        // Ưu tiên token đang map sẵn theo user trong Redis
         String mappedToken = redisService.getString("pending:user:" + id);
 
-        // Prioritize using pending token from redis like source of truth
         if (mappedToken != null && !mappedToken.isBlank()) {
-
-            // renew TTL for pending token and reverse token
-            redisService.set("pending:" + mappedToken, id.toString(),PENDING_TTL_MINUTES, TimeUnit.MINUTES);
+            redisService.set("pending:" + mappedToken, id.toString(), PENDING_TTL_MINUTES, TimeUnit.MINUTES);
             redisService.set("pending:user:" + id, mappedToken, PENDING_TTL_MINUTES, TimeUnit.MINUTES);
-
             return mappedToken;
         }
 
-        // Reuse pendingToken from request if exists
-        pendingToken = (pendingToken != null && !pendingToken.isBlank()) ?
-                pendingToken : UUID.randomUUID().toString();
+        // Fallback token từ client chỉ khi xác thực đúng chủ sở hữu
+        String tokenToUse = null;
+        if (pendingToken != null && !pendingToken.isBlank()) {
+            String ownerId = redisService.getString("pending:" + pendingToken);
+            if (ownerId != null && ownerId.equals(id.toString())) {
+                tokenToUse = pendingToken;
+            }
+        }
 
-        redisService.set("pending:" + pendingToken, id.toString(), PENDING_TTL_MINUTES, TimeUnit.MINUTES);
-        redisService.set("pending:user:" + id, pendingToken, PENDING_TTL_MINUTES, TimeUnit.MINUTES);
+        if (tokenToUse == null) {
+            tokenToUse = UUID.randomUUID().toString();
+        }
 
-        return pendingToken;
+        redisService.set("pending:" + tokenToUse, id.toString(), PENDING_TTL_MINUTES, TimeUnit.MINUTES);
+        redisService.set("pending:user:" + id, tokenToUse, PENDING_TTL_MINUTES, TimeUnit.MINUTES);
+
+        return tokenToUse;
+    }
+
+    private void clearPendingCookie(HttpServletResponse response) {
+        // Xóa cookie pendingToken phía client
+        ResponseCookie expiredCookie = ResponseCookie.from("pendingToken", "")
+                .httpOnly(true)
+                .secure(true)
+                .path("/")
+                .maxAge(0)
+                .build();
+
+        response.addHeader("Set-Cookie", expiredCookie.toString());
+    }
+
+    private void clearRefreshTokenCookie(HttpServletResponse response) {
+        // Xóa cookie pendingToken phía client
+        ResponseCookie expiredCookie = ResponseCookie.from("refreshToken", "")
+                .httpOnly(true)
+                .secure(true)
+                .path("/")
+                .maxAge(0)
+                .build();
+
+        response.addHeader("Set-Cookie", expiredCookie.toString());
     }
 }

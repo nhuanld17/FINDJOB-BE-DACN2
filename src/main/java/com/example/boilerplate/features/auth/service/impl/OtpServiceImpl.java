@@ -1,6 +1,7 @@
 package com.example.boilerplate.features.auth.service.impl;
 
 import com.example.boilerplate.features.auth.service.OtpService;
+import com.example.boilerplate.infrastructure.redis.RedisService;
 import lombok.AllArgsConstructor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
@@ -67,6 +68,7 @@ import java.util.concurrent.TimeUnit;
 @AllArgsConstructor
 public class OtpServiceImpl implements OtpService {
     private final StringRedisTemplate redisTemplate;
+    private final RedisService redisService;
 
     private static final long OTP_TTL_SECONDS  = 5 * 60L;  // 5 phút
     private static final long COOLDOWN_SECONDS = 60L;       // 60 giây
@@ -170,7 +172,7 @@ public class OtpServiceImpl implements OtpService {
     @Override
     public int getAttempts(Long userId) {
         String val = redisTemplate.opsForValue().get("otp:attempts:" + userId);
-        return val != null ? Integer.parseInt(val) : 0;
+        return val != null ? Integer.parseInt(val.trim()) : 0;
     }
 
     /**
@@ -238,21 +240,24 @@ public class OtpServiceImpl implements OtpService {
 
     /**
      * Xóa toàn bộ key OTP liên quan đến user sau khi verify thành công.
-     * Các key bị xóa: otp:, otp:cooldown:, otp:wrong:, pending:, pending:user:
+     * Các key bị xóa: otp:{userId}, otp:cooldown:{userId}, otp:wrong:{userId},
+     * pending:user:{userId}, pending:{token}, otp:attempts:{userId}.
      */
     @Override
     public void clearAll(Long userId) {
-        String token = redisTemplate.opsForValue().get("pending:user:" + userId);
+        String token = redisService.getString("pending:user:" + userId);
 
         redisTemplate.delete(List.of(
                 "otp:" + userId,
                 "otp:cooldown:" + userId,
-                "otp:wrong:" + userId,
-                "pending:user:" + userId
+                "otp:attempts:" + userId,
+                "otp:wrong:" + userId
         ));
 
+        redisService.delete("pending:user:" + userId);
+
         if (token != null && !token.isBlank()) {
-            redisTemplate.delete("pending:" + token);
+            redisService.delete("pending:" + token);
         }
     }
 
@@ -262,16 +267,42 @@ public class OtpServiceImpl implements OtpService {
      * buộc user phải bắt đầu lại flow đăng ký.
      */
     @Override
-    public void clearOtpSessionKeepAttempts(Long userId, String token) {
+    public void clearOtpSessionKeepAttempts(Long userId, String clientToken) {
+        // Lấy map token từ userId trong redis
+        String mappedToken = redisService.getString("pending:user:" + userId);
+        // token chuẩn bị xóa
+        String tokenToDelete = null;
+
+        // Nếu map token tồn tại -> thì gán cho tokenToDelete
+        if (mappedToken != null && !mappedToken.isBlank()) {
+            tokenToDelete = mappedToken;
+        }
+
+        // Trong trường hợp key pending:user:{userId} không tồn tại -> sử dụng clientToken
+        // từ pendingToken
+        else if (clientToken != null && !clientToken.isBlank()) {
+            // Lấy ra user id đang sỡ hữu clientToken này
+            String ownerId = redisService.getString("pending:" + clientToken);
+
+            // Nếu userId sỡ hữu clientToken và userId của tài khoản đăng kí
+            // là cùng 1 người thì xóa -> lưu vào tokenToDelete
+            if (ownerId != null && ownerId.equals(userId.toString())) {
+                tokenToDelete = clientToken;
+            }
+        }
+
+        // Xóa session OTP nhưng giữ attempts
         redisTemplate.delete(List.of(
                 "otp:" + userId,
                 "otp:cooldown:" + userId,
-                "otp:wrong:" + userId,
-                "pending:user:" + userId
+                "otp:wrong:" + userId
         ));
+        redisService.delete("pending:user:" + userId);
 
-        if (token != null && !token.isBlank()) {
-            redisTemplate.delete("pending:" + token);
+        if (tokenToDelete != null && !tokenToDelete.isBlank()) {
+            redisService.delete("pending:" + tokenToDelete);
         }
     }
 }
+
+
