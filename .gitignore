@@ -75,3 +75,5 @@ $RECYCLE.BIN/
 
 # ===== DOCKER =====
 docker-compose.override.yml
+# Added by code-review-graph
+.code-review-graph/

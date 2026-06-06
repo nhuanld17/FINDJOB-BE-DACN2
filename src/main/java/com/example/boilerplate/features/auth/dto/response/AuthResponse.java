@@ -5,8 +5,10 @@ import com.example.boilerplate.features.user.entity.Role;
 import java.util.Set;
 
 public record AuthResponse(
+    Long id,
     String username,
-    Set<Role> roles,
-    String accessToken
+    Set<Role> roles
 ) {
 }
+
+

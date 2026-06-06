@@ -360,12 +360,33 @@ public class AuthServiceImplement implements AuthService {
         redisService.set(refreshKey, refreshToken, 7, TimeUnit.DAYS);
 
         // Thêm refreshToken vào cookie HttpOnly
-        writeRefreshCookie(httpServletResponse, refreshToken);
+        writeCookie(
+                httpServletResponse,
+                "refreshToken",
+                refreshToken,
+                true,
+                true,
+                "/api/v1/auth/refresh-token",
+                "Strict",
+                7 * 24 * 60 * 60L
+        );
+
+        // Thêm accessToken vào cookie HttpOnly
+        writeCookie(
+                httpServletResponse,
+                "accessToken",
+                accessToken,
+                true,
+                true,
+                "/",
+                "Strict",
+                30 * 60L
+        );
 
         return new AuthResponse(
+                user.getId(),
                 user.getUsername(),
-                user.getRoles(),
-                accessToken
+                user.getRoles()
         );
     }
 
@@ -420,12 +441,35 @@ public class AuthServiceImplement implements AuthService {
         // Rotate refresh token để đồng bộ TTL Redis với exp bên trong JWT
         String newRefreshToken = jwtUtil.generateRefreshToken(userDetails);
         redisService.set(refreshKey, newRefreshToken, 7, TimeUnit.DAYS);
-        writeRefreshCookie(httpServletResponse, newRefreshToken);
+
+        // ghi refreshToken vào cookie
+        writeCookie(
+                httpServletResponse,
+                "refreshToken",
+                newRefreshToken,
+                true,
+                true,
+                "/api/v1/auth/refresh-token",
+                "Strict",
+                7 * 24 * 60 * 60L
+        );
+
+        // ghi accessToken vào cookie
+        writeCookie(
+                httpServletResponse,
+                "accessToken",
+                newAccessToken,
+                true,
+                true,
+                "/",
+                "Strict",
+                30 * 60L
+        );
 
         return new AuthResponse(
+                user.getId(),
                 user.getUsername(),
-                user.getRoles(),
-                newAccessToken
+                user.getRoles()
         );
     }
 
@@ -440,6 +484,7 @@ public class AuthServiceImplement implements AuthService {
     public void logout(String refreshToken, HttpServletResponse httpServletResponse) {
         // Always clear cookie even if token is missing/invalid.
         clearRefreshTokenCookie(httpServletResponse);
+        clearAccessTokenCookie(httpServletResponse);
 
         if (refreshToken == null || refreshToken.isBlank()) {
             return;
@@ -459,15 +504,25 @@ public class AuthServiceImplement implements AuthService {
         });
     }
 
-    private void writeRefreshCookie(HttpServletResponse httpServletResponse, String refreshToken) {
-        ResponseCookie refreshCookie = ResponseCookie.from("refreshToken", refreshToken)
-                .httpOnly(true)
-                .secure(true)
-                .path("/")
-                .maxAge(7 * 24 * 60 * 60) // 7 ngày
+    private void writeCookie(
+            HttpServletResponse response,
+            String name,
+            String value,
+            boolean httpOnly,
+            boolean secure,
+            String path,
+            String sameSite,
+            long maxAgeSeconds
+    ) {
+        ResponseCookie cookie = ResponseCookie.from(name, value)
+                .httpOnly(httpOnly)
+                .secure(secure)
+                .sameSite(sameSite)
+                .path(path)
+                .maxAge(maxAgeSeconds)
                 .build();
 
-        httpServletResponse.addHeader("Set-Cookie", refreshCookie.toString());
+        response.addHeader("Set-Cookie", cookie.toString());
     }
 
     private void handleInactiveUserLogin(String email, HttpServletResponse httpServletResponse, String pendingToken) {
@@ -521,7 +576,7 @@ public class AuthServiceImplement implements AuthService {
     private void writePendingCookie(HttpServletResponse response, String token) {
         ResponseCookie pendingCookie = ResponseCookie.from("pendingToken", token)
                 .httpOnly(true)
-                .secure(true)
+                .secure(false)
                 .path("/")
                 .maxAge(600)
                 .build();
@@ -562,7 +617,7 @@ public class AuthServiceImplement implements AuthService {
         // Xóa cookie pendingToken phía client
         ResponseCookie expiredCookie = ResponseCookie.from("pendingToken", "")
                 .httpOnly(true)
-                .secure(true)
+                .secure(false)
                 .path("/")
                 .maxAge(0)
                 .build();
@@ -575,7 +630,20 @@ public class AuthServiceImplement implements AuthService {
         ResponseCookie expiredCookie = ResponseCookie.from("refreshToken", "")
                 .httpOnly(true)
                 .secure(true)
-                .path("/")
+                .sameSite("Strict")
+                .path("/api/v1/auth/refresh-token")
+                .maxAge(0)
+                .build();
+
+        response.addHeader("Set-Cookie", expiredCookie.toString());
+    }
+
+    private void clearAccessTokenCookie(HttpServletResponse response) {
+        ResponseCookie expiredCookie = ResponseCookie.from("accessToken", "")
+                .httpOnly(true)
+                .secure(true) // Nên để true cho đồng bộ với lúc tạo
+                .sameSite("Strict")
+                .path("/") // Path của accessToken là "/"
                 .maxAge(0)
                 .build();
 
