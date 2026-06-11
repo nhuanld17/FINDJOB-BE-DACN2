@@ -4,6 +4,7 @@ import com.example.boilerplate.features.auth.dto.request.LoginRequest;
 import com.example.boilerplate.features.auth.dto.request.RegisterRequest;
 import com.example.boilerplate.features.auth.dto.request.VerifyOtpRequest;
 import com.example.boilerplate.features.auth.dto.response.AuthResponse;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
 public interface AuthService {
@@ -18,5 +19,5 @@ public interface AuthService {
 
     AuthResponse refreshToken(String refreshToken, HttpServletResponse httpServletResponse);
 
-    void logout(String refreshToken, HttpServletResponse httpServletResponse);
+    void logout(String refreshToken, HttpServletRequest httpServletRequest, HttpServletResponse httpServletResponse);
 }

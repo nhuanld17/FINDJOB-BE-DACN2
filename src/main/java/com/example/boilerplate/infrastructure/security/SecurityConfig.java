@@ -20,8 +20,11 @@ import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.AntPathRequestMatcher;
 import org.springframework.security.web.util.matcher.RequestMatcher;
+import org.springframework.stereotype.Component;
+
+import java.util.Arrays;
 
 @Configuration
 @EnableWebSecurity
@@ -43,11 +46,9 @@ public class SecurityConfig {
     };
 
     public static RequestMatcher[] publicMatchers() {
-        RequestMatcher[] matchers = new RequestMatcher[PUBLIC_PATTERNS.length];
-        for (int i = 0; i < PUBLIC_PATTERNS.length; i++) {
-            matchers[i] = PathPatternRequestMatcher.withDefaults().matcher(PUBLIC_PATTERNS[i]);
-        }
-        return matchers;
+        return Arrays.stream(PUBLIC_PATTERNS)
+                .map(AntPathRequestMatcher::new)
+                .toArray(RequestMatcher[]::new);
     }
 
     @Bean
@@ -66,7 +67,7 @@ public class SecurityConfig {
                 })
                 // Spring Security 7 uses PathPatternRequestMatcher instead of antMatchers/mvcMatchers
                 .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(publicMatchers()).permitAll()
+                        .requestMatchers(PUBLIC_PATTERNS).permitAll()
                                 .anyRequest().authenticated()
                         )
                 .authenticationProvider(daoAuthenticationProvider())
@@ -75,8 +76,10 @@ public class SecurityConfig {
         return http.build();
     }
 
-    private DaoAuthenticationProvider daoAuthenticationProvider() {
-        DaoAuthenticationProvider provider = new DaoAuthenticationProvider(userDetailsService);
+    @Bean
+    public DaoAuthenticationProvider daoAuthenticationProvider() {
+        DaoAuthenticationProvider provider = new DaoAuthenticationProvider();
+        provider.setUserDetailsService(userDetailsService);
         provider.setPasswordEncoder(passwordEncoder());
         return provider;
     }
@@ -91,3 +94,4 @@ public class SecurityConfig {
         return new ProviderManager(daoAuthenticationProvider());
     }
 }
+

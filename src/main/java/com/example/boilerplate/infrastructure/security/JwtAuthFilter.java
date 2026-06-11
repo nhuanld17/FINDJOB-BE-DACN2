@@ -1,5 +1,6 @@
 package com.example.boilerplate.infrastructure.security;
 
+import com.example.boilerplate.features.auth.service.TokenBlacklistService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -25,6 +26,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     private final JwtUtil jwtUtil;
     private final UserDetailsServiceImpl userDetailsService;
     private final AuthenticationEntryPoint authenticationEntryPoint;
+    private final TokenBlacklistService tokenBlacklistService;
 
     private final RequestMatcher publicEndpointsMatcher =
             new OrRequestMatcher(SecurityConfig.publicMatchers());
@@ -36,9 +38,9 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
     @Override
     protected void doFilterInternal(
-            @NonNull HttpServletRequest request,
-            @NonNull HttpServletResponse response,
-            @NonNull  FilterChain filterChain) throws ServletException, IOException {
+            HttpServletRequest request,
+            HttpServletResponse response,
+            FilterChain filterChain) throws ServletException, IOException {
 
         String authorizationHeader = request.getHeader("Authorization");
 
@@ -50,11 +52,20 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
         String token = authorizationHeader.substring(7);
         String email;
+        String jti;
 
         try {
             email = jwtUtil.extractUsername(token);
+            jti = jwtUtil.extractJti(token);
         } catch (Exception e) {
             // Token malformed / expired / invalid signature -> Skip
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        // nếu token đã được thu hồi
+        if (jti != null && tokenBlacklistService.isAccessTokenRevoked(jti)) {
+            SecurityContextHolder.clearContext();
             filterChain.doFilter(request, response);
             return;
         }
@@ -85,3 +96,4 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         filterChain.doFilter(request, response);
     }
 }
+

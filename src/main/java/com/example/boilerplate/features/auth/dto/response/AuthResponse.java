@@ -7,7 +7,8 @@ import java.util.Set;
 public record AuthResponse(
     Long id,
     String username,
-    Set<Role> roles
+    Set<Role> roles,
+    String accessToken
 ) {
 }
 

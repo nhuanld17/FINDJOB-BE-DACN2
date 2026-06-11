@@ -38,6 +38,7 @@ public enum ErrorCode {
     ACCOUNT_BANNED(2007, "An account using this email was banned", HttpStatus.FORBIDDEN),
     OTP_SEND_LIMIT_REACHED(2008, "OTP was resend too many time", HttpStatus.TOO_MANY_REQUESTS),
     RESEND_OTP_BLOCKED(2009,"Resend OTP blocked" ,HttpStatus.CONFLICT ),
+    TOKEN_REVOKED(2010, "Token has been revoked", HttpStatus.UNAUTHORIZED),
 
     // ===== System =====
     INTERNAL_ERROR(9999, "Internal server error", HttpStatus.INTERNAL_SERVER_ERROR),

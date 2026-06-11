@@ -9,6 +9,7 @@ import com.example.boilerplate.features.auth.dto.request.VerifyOtpRequest;
 import com.example.boilerplate.features.auth.dto.response.AuthResponse;
 import com.example.boilerplate.features.auth.service.AuthService;
 import com.example.boilerplate.features.auth.service.OtpService;
+import com.example.boilerplate.features.auth.service.TokenBlacklistService;
 import com.example.boilerplate.features.user.entity.User;
 import com.example.boilerplate.features.user.repository.RoleRepository;
 import com.example.boilerplate.features.user.repository.UserRepository;
@@ -16,6 +17,7 @@ import com.example.boilerplate.infrastructure.mail.EmailService;
 import com.example.boilerplate.infrastructure.redis.RedisService;
 import com.example.boilerplate.infrastructure.security.CustomUserDetails;
 import com.example.boilerplate.infrastructure.security.JwtUtil;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseCookie;
@@ -45,6 +47,7 @@ public class AuthServiceImplement implements AuthService {
     private final OtpService otpService;
     private final AuthenticationManager authenticationManager;
     private final JwtUtil jwtUtil;
+    private final TokenBlacklistService tokenBlacklistService;
 
     @Override
     @Transactional
@@ -371,22 +374,12 @@ public class AuthServiceImplement implements AuthService {
                 7 * 24 * 60 * 60L
         );
 
-        // Thêm accessToken vào cookie HttpOnly
-        writeCookie(
-                httpServletResponse,
-                "accessToken",
-                accessToken,
-                true,
-                true,
-                "/",
-                "Strict",
-                30 * 60L
-        );
-
+        // trả về thông tin của user (jti, username, roles, accesstoken)
         return new AuthResponse(
                 user.getId(),
                 user.getUsername(),
-                user.getRoles()
+                user.getRoles(),
+                accessToken
         );
     }
 
@@ -399,11 +392,18 @@ public class AuthServiceImplement implements AuthService {
         }
 
         String email;
+        String jti;
         try {
             email = jwtUtil.extractUsername(refreshToken);
+            jti = jwtUtil.extractJti(refreshToken);
         } catch (Exception e) {
             clearRefreshTokenCookie(httpServletResponse);
             throw new AppException(ErrorCode.UNAUTHORIZED);
+        }
+
+        // kiểm tra AT đã bị thu hồi hay chưa
+        if (tokenBlacklistService.isRefreshTokenRevoked(jti)) {
+            throw new AppException(ErrorCode.TOKEN_REVOKED);
         }
 
         User user = userRepository.findByEmailWithRoles(email)
@@ -454,22 +454,11 @@ public class AuthServiceImplement implements AuthService {
                 7 * 24 * 60 * 60L
         );
 
-        // ghi accessToken vào cookie
-        writeCookie(
-                httpServletResponse,
-                "accessToken",
-                newAccessToken,
-                true,
-                true,
-                "/",
-                "Strict",
-                30 * 60L
-        );
-
         return new AuthResponse(
                 user.getId(),
                 user.getUsername(),
-                user.getRoles()
+                user.getRoles(),
+                newAccessToken
         );
     }
 
@@ -481,22 +470,44 @@ public class AuthServiceImplement implements AuthService {
      * Access tokens are stateless JWTs; we do not keep a blacklist here.
      */
     @Override
-    public void logout(String refreshToken, HttpServletResponse httpServletResponse) {
+    public void logout(String refreshToken, HttpServletRequest request, HttpServletResponse response) {
+
         // Always clear cookie even if token is missing/invalid.
-        clearRefreshTokenCookie(httpServletResponse);
-        clearAccessTokenCookie(httpServletResponse);
+        clearRefreshTokenCookie(response);
 
         if (refreshToken == null || refreshToken.isBlank()) {
             return;
         }
 
+        String authorizationHeader = request.getHeader("Authorization");
+
+        // If no token -> skip, let the next filter process
+        if (authorizationHeader == null || !authorizationHeader.startsWith("Bearer ")) {
+            return;
+        }
+
+        String accessToken = authorizationHeader.substring(7);
+
         String email;
+        String jtiRefreshToken;
+        long remainingRefreshToken;
+        String jtiAccessToken;
+        long remainingAccessToken;
+
         try {
+            jtiRefreshToken = jwtUtil.extractJti(refreshToken);
+            jtiAccessToken = jwtUtil.extractJti(accessToken);
+            remainingAccessToken = jwtUtil.remainingTimeOf(accessToken);
+            remainingRefreshToken = jwtUtil.remainingTimeOf(refreshToken);
             email = jwtUtil.extractUsername(refreshToken);
         } catch (Exception e) {
             // Malformed/expired/invalid signature -> still treat as logged out.
             return;
         }
+
+        // lưu Access Token và Refresh Token vào blacklist
+        tokenBlacklistService.revokeAccessToken(jtiAccessToken, remainingAccessToken);
+        tokenBlacklistService.revokeRefreshToken(jtiRefreshToken, remainingRefreshToken);
 
         userRepository.findByEmail(email).ifPresent(user -> {
             String refreshKey = "auth:refresh:" + user.getId();
@@ -632,18 +643,6 @@ public class AuthServiceImplement implements AuthService {
                 .secure(true)
                 .sameSite("Strict")
                 .path("/api/v1/auth/refresh-token")
-                .maxAge(0)
-                .build();
-
-        response.addHeader("Set-Cookie", expiredCookie.toString());
-    }
-
-    private void clearAccessTokenCookie(HttpServletResponse response) {
-        ResponseCookie expiredCookie = ResponseCookie.from("accessToken", "")
-                .httpOnly(true)
-                .secure(true) // Nên để true cho đồng bộ với lúc tạo
-                .sameSite("Strict")
-                .path("/") // Path của accessToken là "/"
                 .maxAge(0)
                 .build();
 

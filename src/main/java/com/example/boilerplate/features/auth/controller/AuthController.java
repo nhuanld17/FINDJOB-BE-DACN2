@@ -6,6 +6,7 @@ import com.example.boilerplate.features.auth.dto.request.RegisterRequest;
 import com.example.boilerplate.features.auth.dto.request.VerifyOtpRequest;
 import com.example.boilerplate.features.auth.dto.response.AuthResponse;
 import com.example.boilerplate.features.auth.service.AuthService;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -79,9 +80,10 @@ public class AuthController {
     @PostMapping("/logout")
     public ResponseEntity<?> logout(
             @CookieValue(name = "refreshToken", required = false) String refreshToken,
+            HttpServletRequest httpServletRequest,
             HttpServletResponse httpServletResponse
     ) {
-        authService.logout(refreshToken, httpServletResponse);
+        authService.logout(refreshToken, httpServletRequest, httpServletResponse);
         return ResponseEntity.ok(APIResponse.success());
     }
 }

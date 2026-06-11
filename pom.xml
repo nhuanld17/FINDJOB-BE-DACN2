@@ -5,38 +5,45 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.0.5</version>
+        <version>3.4.2</version>
         <relativePath/>
     </parent>
 
     <groupId>com.example</groupId>
     <artifactId>boilerplate</artifactId>
     <version>0.0.1-SNAPSHOT</version>
-    <name/>
-    <description/>
-    <url/>
-    <licenses><license/></licenses>
-    <developers><developer/></developers>
-    <scm>
-        <connection/><developerConnection/><tag/><url/>
-    </scm>
+    <name>boilerplate</name>
+    <description>Spring Boot Boilerplate</description>
 
     <properties>
-        <java.version>17</java.version>
-        <jjwt.version>0.13.0</jjwt.version>
+        <java.version>21</java.version>
+        <jjwt.version>0.12.6</jjwt.version>
         <mapstruct.version>1.6.3</mapstruct.version>
+        <springdoc.version>2.8.4</springdoc.version>
     </properties>
 
-    <dependencies>
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>1.19.8</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
 
+    <dependencies>
         <!-- =============================== -->
         <!--         WEB & REST API          -->
         <!-- =============================== -->
         <!-- Embedded Tomcat + Spring MVC -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-webmvc</artifactId>
+            <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+
         <!-- Bean Validation: @Valid, @NotBlank, @Email, @Size... -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -51,19 +58,22 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
-        <!-- JWT API - import Jwts, Claims... trong code -->
+
+        <!-- JWT API -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-api</artifactId>
             <version>${jjwt.version}</version>
         </dependency>
-        <!-- JWT Implementation - chỉ cần ở runtime, không import trực tiếp -->
+
+        <!-- JWT Implementation - chỉ cần ở runtime -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
             <artifactId>jjwt-impl</artifactId>
             <version>${jjwt.version}</version>
             <scope>runtime</scope>
         </dependency>
+
         <!-- JWT Jackson - serialize/deserialize JWT claims qua Jackson -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
@@ -80,6 +90,7 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
+
         <!-- PostgreSQL JDBC Driver -->
         <dependency>
             <groupId>org.postgresql</groupId>
@@ -90,11 +101,12 @@
         <!-- =============================== -->
         <!--       DATABASE MIGRATION        -->
         <!-- =============================== -->
-        <!-- Flyway: quản lý schema bằng file SQL (V1__init.sql, V2__...) -->
+        <!-- Flyway core -->
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-flyway</artifactId>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
         </dependency>
+
         <!-- Flyway PostgreSQL dialect - bắt buộc từ Flyway 10+ -->
         <dependency>
             <groupId>org.flywaydb</groupId>
@@ -110,14 +122,20 @@
             <artifactId>spring-boot-starter-mail</artifactId>
         </dependency>
 
+        <!-- Thymeleaf: Template engine cho email HTML -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-thymeleaf</artifactId>
+        </dependency>
+
         <!-- =============================== -->
         <!--         DOCUMENTATION           -->
         <!-- =============================== -->
-        <!-- Swagger UI tự động tại /swagger-ui.html -->
+        <!-- Swagger UI tại /swagger-ui/index.html -->
         <dependency>
             <groupId>org.springdoc</groupId>
             <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-            <version>3.0.2</version>
+            <version>${springdoc.version}</version>
         </dependency>
 
         <!-- =============================== -->
@@ -130,6 +148,27 @@
         </dependency>
 
         <!-- =============================== -->
+        <!--            CACHE                -->
+        <!-- =============================== -->
+        <!-- Spring Cache abstraction: @Cacheable, @CacheEvict, @CachePut -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-cache</artifactId>
+        </dependency>
+
+        <!-- Redis driver + Spring Data Redis (Lettuce client mặc định) -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+        </dependency>
+
+        <!-- Connection pool cho Redis -->
+        <dependency>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-pool2</artifactId>
+        </dependency>
+
+        <!-- =============================== -->
         <!--         CODE GENERATION         -->
         <!-- =============================== -->
         <!-- Lombok: @Getter, @Setter, @Builder, @RequiredArgsConstructor... -->
@@ -139,82 +178,59 @@
             <optional>true</optional>
         </dependency>
 
-        <!-- =============================== -->
-        <!--            CACHE                -->
-        <!-- =============================== -->
-        <!-- Spring Cache abstraction: @Cacheable, @CacheEvict, @CachePut -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-cache</artifactId>
-        </dependency>
-        <!-- Redis driver + Spring Data Redis (Lettuce client mặc định) -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-redis</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-pool2</artifactId>
-        </dependency>
-
-        <!-- MapStruct: mapping tự động giữa Entity <-> DTO -->
+        <!-- MapStruct: mapping Entity <-> DTO -->
         <dependency>
             <groupId>org.mapstruct</groupId>
             <artifactId>mapstruct</artifactId>
             <version>${mapstruct.version}</version>
         </dependency>
 
-        <!-- Thymeleaf: Template engine cho email -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-thymeleaf</artifactId>
-        </dependency>
-
         <!-- =============================== -->
         <!--              TEST               -->
         <!-- =============================== -->
+        <!-- JUnit 5, Mockito, MockMvc, AssertJ, Spring Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-actuator-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-jpa-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-flyway-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-security-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-validation-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-webmvc-test</artifactId>
+            <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
 
+        <!-- Spring Security Test: @WithMockUser, SecurityMockMvc... -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers Core -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers JUnit Jupiter -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers PostgreSQL -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
         <plugins>
-
             <!-- Spring Boot Maven Plugin: build executable jar -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
-                    <!-- Loại Lombok ra khỏi jar cuối vì chỉ cần lúc compile -->
                     <excludes>
                         <exclude>
                             <groupId>org.projectlombok</groupId>
@@ -224,7 +240,7 @@
                 </configuration>
             </plugin>
 
-            <!-- Annotation Processor: áp dụng cho cả compile lẫn test-compile -->
+            <!-- Annotation Processor: Lombok + MapStruct -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -234,6 +250,7 @@
                         <path>
                             <groupId>org.projectlombok</groupId>
                             <artifactId>lombok</artifactId>
+                            <version>1.18.36</version>
                         </path>
                         <path>
                             <groupId>org.mapstruct</groupId>
@@ -243,8 +260,6 @@
                     </annotationProcessorPaths>
                 </configuration>
             </plugin>
-
         </plugins>
     </build>
-
 </project>
