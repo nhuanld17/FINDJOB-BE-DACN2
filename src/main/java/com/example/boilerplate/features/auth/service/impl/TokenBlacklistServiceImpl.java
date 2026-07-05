@@ -12,8 +12,8 @@ import java.util.concurrent.TimeUnit;
 public class TokenBlacklistServiceImpl implements TokenBlacklistService {
 
     private final RedisTemplate<String, String> redisTemplate;
-    private static final String REFRESH_BLACKLIST_PREFIX = "refresh_blacklist:";
-    private static final String ACCESS_BLACKLIST_PREFIX = "access_blacklist:";
+    private static final String REFRESH_BLACKLIST_PREFIX = "blacklist:refresh:";
+    private static final String ACCESS_BLACKLIST_PREFIX = "blacklist:access:";
 
     // Thu hồi RefreshToken
     @Override
@@ -30,12 +30,12 @@ public class TokenBlacklistServiceImpl implements TokenBlacklistService {
     // kiểm tra RefreshToken đã bị thu hồi chưa
     @Override
     public boolean isRefreshTokenRevoked(String jti) {
-        return Boolean.TRUE.equals(redisTemplate.hasKey(REFRESH_BLACKLIST_PREFIX + jti));
+        return redisTemplate.hasKey(REFRESH_BLACKLIST_PREFIX + jti);
     }
 
     // Kiểm tra Access Token đã bị thu hồi chưa
     @Override
     public boolean isAccessTokenRevoked(String jti) {
-        return Boolean.TRUE.equals(redisTemplate.hasKey(ACCESS_BLACKLIST_PREFIX + jti));
+        return redisTemplate.hasKey(ACCESS_BLACKLIST_PREFIX + jti);
     }
 }

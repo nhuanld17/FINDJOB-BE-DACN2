@@ -2,10 +2,12 @@ package com.example.boilerplate.common.exception;
 
 import com.example.boilerplate.common.constant.ErrorCode;
 import com.example.boilerplate.common.response.ErrorResponse;
+import com.fasterxml.jackson.databind.exc.InvalidFormatException;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -17,9 +19,12 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.UUID;
 
 @Slf4j
 @RestControllerAdvice
@@ -60,6 +65,34 @@ public class GlobalExceptionHandler {
         return ResponseEntity
                 .badRequest()
                 .body(ErrorResponse.ofValidation(errors));
+    }
+
+    // Body không đọc được: JSON sai cú pháp, sai kiểu dữ liệu (vd UUID sai định dạng)
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<?> handleNotReadable(HttpMessageNotReadableException ex) {
+        Throwable cause = ex.getMostSpecificCause();
+
+        // Sai kiểu 1 field cụ thể (vd deviceId không phải UUID hợp lệ)
+        if (cause instanceof InvalidFormatException ife && !ife.getPath().isEmpty()) {
+            String field = ife.getPath().get(ife.getPath().size() - 1).getFieldName();
+            Class<?> targetType = ife.getTargetType();
+
+            String message = targetType != null && UUID.class.isAssignableFrom(targetType)
+                    ? "Invalid UUID format"
+                    : "Invalid value for type '%s'".formatted(
+                            targetType != null ? targetType.getSimpleName() : "unknown");
+
+            Map<String, List<String>> errors = new HashMap<>();
+            errors.put(Objects.requireNonNullElse(field, "body"),
+                    new ArrayList<>(List.of(message)));
+            return ResponseEntity.badRequest().body(ErrorResponse.ofValidation(errors));
+        }
+
+        // JSON hỏng / rỗng / không parse được
+        log.warn("Malformed request body: {}", cause.getMessage());
+        return ResponseEntity
+                .badRequest()
+                .body(ErrorResponse.of(400, "Malformed request body"));
     }
 
     // AppException — business logic errors
@@ -154,17 +187,26 @@ public class GlobalExceptionHandler {
 
     private String resolveValidationMessage(org.springframework.validation.FieldError fieldError) {
         String raw = fieldError.getDefaultMessage();
+
+        // raw phải là 1 key của ErrorCode (vd: "INVALID_PASSWORD"); nếu không thì trả thẳng
         try {
-            ErrorCode errorCode = ErrorCode.valueOf(raw);
-            try {
-                ConstraintViolation<?> violation = fieldError.unwrap(ConstraintViolation.class);
-                return resolveEnumKey(errorCode.getMessage(), violation.getConstraintDescriptor().getAttributes());
-            } catch (Exception ignored) {}
-            return errorCode.getMessage();
+            ErrorCode.valueOf(raw);
         } catch (IllegalArgumentException e) {
             log.warn("Non-enum validation message: '{}'", raw);
-            return raw; // fallback: trả thẳng raw string
+            return raw;
         }
+
+        // Lấy attributes của constraint (min, max, ...) để thay thế placeholder {min}, {max}
+        Map<String, Object> attributes = Collections.emptyMap();
+        try {
+            ConstraintViolation<?> violation = fieldError.unwrap(ConstraintViolation.class);
+            attributes = violation.getConstraintDescriptor().getAttributes();
+        } catch (Exception ignored) {
+            // Không unwrap được ConstraintViolation -> replace được placeholder nào thì replace nấy
+        }
+
+        // Truyền KEY (raw), không phải message đã resolve — resolveEnumKey tự valueOf và thay placeholder
+        return resolveEnumKey(raw, attributes);
     }
 
     private String resolveEnumKey(String raw, Map<String, Object> attributes) {

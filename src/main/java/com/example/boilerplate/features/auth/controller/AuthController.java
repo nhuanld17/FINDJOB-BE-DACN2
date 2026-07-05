@@ -4,7 +4,7 @@ import com.example.boilerplate.common.response.APIResponse;
 import com.example.boilerplate.features.auth.dto.request.LoginRequest;
 import com.example.boilerplate.features.auth.dto.request.RegisterRequest;
 import com.example.boilerplate.features.auth.dto.request.VerifyOtpRequest;
-import com.example.boilerplate.features.auth.dto.response.AuthResponse;
+import com.example.boilerplate.features.auth.dto.response.*;
 import com.example.boilerplate.features.auth.service.AuthService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -21,47 +21,48 @@ public class AuthController {
     private final AuthService authService;
 
     @PostMapping("/register")
-    public ResponseEntity<?> register(
+    public ResponseEntity<APIResponse<RegisterResponse>> register(
             @RequestBody @Valid RegisterRequest request,
             HttpServletResponse httpServletResponse,
             @CookieValue(name = "pendingToken", required = false) String pendingToken
     ) {
 
-        authService.register(request, httpServletResponse, pendingToken);
+        RegisterResponse response = authService.register(request, httpServletResponse, pendingToken);
 
-        return ResponseEntity.ok(APIResponse.success());
+        return ResponseEntity.ok(APIResponse.success(response));
     }
 
     @PostMapping("/verify-otp")
-    public ResponseEntity<?> verifyOtp(
+    public ResponseEntity<APIResponse<VerifyOtpResponse>> verifyOtp(
             @RequestBody @Valid VerifyOtpRequest request,
             @CookieValue(name = "pendingToken", required = false) String pendingToken,
             HttpServletResponse httpServletResponse
     ){
 
-        authService.verifyOtp(request, pendingToken, httpServletResponse);
+        VerifyOtpResponse response = authService.verifyOtp(request, pendingToken, httpServletResponse);
 
-        return ResponseEntity.ok(APIResponse.success());
+        return ResponseEntity.ok(APIResponse.success(response));
     }
 
     @PostMapping("/resend-otp")
-    public ResponseEntity<?> resendOtp(
+    public ResponseEntity<APIResponse<ResendOtpResponse>> resendOtp(
             @CookieValue(name = "pendingToken", required = false) String pendingToken,
             HttpServletResponse httpServletResponse
     ) {
 
-        authService.resendOtp(pendingToken, httpServletResponse);
+        ResendOtpResponse response = authService.resendOtp(pendingToken, httpServletResponse);
 
-        return ResponseEntity.ok(APIResponse.success());
+        return ResponseEntity.ok(APIResponse.success(response));
     }
 
     @PostMapping("/login")
     public ResponseEntity<?> login(
             @RequestBody @Valid LoginRequest request,
+            HttpServletRequest  httpServletRequest,
             HttpServletResponse httpServletResponse,
             @CookieValue(name = "pendingToken", required = false) String pendingToken
     ) {
-        AuthResponse response = authService.login(request, httpServletResponse, pendingToken);
+        LoginResult response = authService.login(request, httpServletRequest, httpServletResponse, pendingToken);
 
         return ResponseEntity.ok(APIResponse.success(response));
     }
@@ -86,4 +87,6 @@ public class AuthController {
         authService.logout(refreshToken, httpServletRequest, httpServletResponse);
         return ResponseEntity.ok(APIResponse.success());
     }
+
+
 }

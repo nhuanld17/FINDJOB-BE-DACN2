@@ -4,7 +4,6 @@ import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Component;
@@ -28,15 +27,28 @@ public class JwtUtil {
 
     // ========== Generate ==========
 
-    public String generateAccessToken(UserDetails userDetails) {
-        return buildToken(userDetails, accessTokenExpirationMs);
+    public String generateAccessToken(UserDetails userDetails, String sessionId, String deviceId) {
+        return buildToken(userDetails, accessTokenExpirationMs, sessionId, deviceId);
     }
 
-    public String generateRefreshToken(UserDetails userDetails) {
-        return buildToken(userDetails, refreshTokenExpirationMs);
+    public String generateRefreshToken(UserDetails userDetails, String sessionId, String deviceId) {
+        return buildToken(userDetails, refreshTokenExpirationMs, sessionId, deviceId);
     }
 
     // ========== Extract ==========
+    public String extractSessionId(String token) {
+
+        Object sessionId = extractAllClaims(token).get("sessionId");
+
+        return sessionId != null ? sessionId.toString() : null;
+        
+    }
+
+    public String extractDeviceId(String token) {
+        Object deviceId = extractAllClaims(token).get("deviceId");
+
+        return deviceId != null ? deviceId.toString() : null;
+    }
 
     public String extractUsername(String token) {
         return extractAllClaims(token).getSubject();
@@ -73,7 +85,7 @@ public class JwtUtil {
 
     // ========== Private ==========
 
-    private String buildToken(UserDetails userDetails, long expirationMs) {
+    private String buildToken(UserDetails userDetails, long expirationMs, String sessionId, String deviceId) {
         Instant now = Instant.now();
 
         List<String> roles = new ArrayList<>();
@@ -81,9 +93,14 @@ public class JwtUtil {
             roles.add(authority.getAuthority());
         }
 
+        String jti = UUID.randomUUID().toString();
+
         return Jwts.builder()
+                .id(jti)
                 .subject(userDetails.getUsername())
                 .claim("roles", roles)
+                .claim("sessionId", sessionId)
+                .claim("deviceId", deviceId)
                 .issuedAt(Date.from(now))
                 .expiration(Date.from(now.plusMillis(expirationMs)))
                 .signWith(getSigningKey())
@@ -103,9 +120,10 @@ public class JwtUtil {
         return Keys.hmacShaKeyFor(keyBytes);
     }
 
-    public long remainingTimeOf(String accessToken) {
-        long expiration = extractExpiration(accessToken).getTime();
-
-        return expiration - System.currentTimeMillis();
+    public long remainingTimeOf(String token) {
+        long remainingMillis = extractExpiration(token).getTime() - System.currentTimeMillis();
+        return remainingMillis / 1000;   // trả giây, khớp revoke*(remainingSeconds, SECONDS)
     }
+
 }
+

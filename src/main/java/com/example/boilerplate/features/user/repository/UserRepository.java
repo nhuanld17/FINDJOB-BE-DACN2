@@ -7,6 +7,7 @@ import jakarta.validation.constraints.Size;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
@@ -22,6 +23,14 @@ public interface UserRepository extends JpaRepository<User,Long> {
         WHERE u.email = :email
     """)
     Optional<User> findByEmailWithRoles(@Param("email") String email);
+
+    @Query("""
+        SELECT distinct u
+        FROM User u
+        LEFT JOIN FETCH u.roles
+        WHERE u.username = :username
+    """)
+    Optional<User> findByUsernameWithRoles(@Param("username") String username);
 
     @Query("""
         SELECT distinct u
@@ -49,7 +58,7 @@ public interface UserRepository extends JpaRepository<User,Long> {
     @Query("""
         SELECT (count(u) > 0)
         FROM User u
-        WHERE u.email = :email and u.isActive = true and u.deleted = true
+        WHERE u.email = :email and u.deleted = true
     """)
     boolean isEmailBanned(@Param("email") String email);
 
@@ -73,4 +82,6 @@ public interface UserRepository extends JpaRepository<User,Long> {
         WHERE u.email <> :email and u.username = :username
     """)
     boolean isUserNameAlreadyInUse(@Param("username") String username, @Param("email") String email);
+
+    Optional<User> findByUsername(String username);
 }

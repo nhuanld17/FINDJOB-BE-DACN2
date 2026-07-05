@@ -13,6 +13,14 @@ target/
 *.key
 *.p12
 *.jks
+.serena
+.claude
+.vscode
+.zed
+.codebase-memory
+.cursor
+.github
+AGENTS.md
 
 # ===== LOGS =====
 *.log

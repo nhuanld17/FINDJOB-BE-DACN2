@@ -29,4 +29,6 @@ public interface OtpService {
     // ───────────────────────── Clear ─────────────────────────────────────
     void clearAll(Long userId);
     void clearOtpSessionKeepAttempts(Long userId, String token);
+
+    long getOtpTtl(Long id);
 }

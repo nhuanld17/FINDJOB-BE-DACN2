@@ -13,11 +13,14 @@ public enum ErrorCode {
     OTP_VERIFICATION_SESSION_EXPIRED(3003, "OTP verification session expired", HttpStatus.FORBIDDEN),
     MAX_WRONG_OTP(3004, "OTP Wrong too many time", HttpStatus.TOO_MANY_REQUESTS),
     OTP_EXPIRED(3005, "OTP is expired or not true", HttpStatus.BAD_REQUEST),
-    OTP_INVALID(3006, "OTP is not true", HttpStatus.BAD_REQUEST),
-    COOLDOWN_ACTIVE(3007, "Cooldown is active", HttpStatus.BAD_REQUEST),
     INVALID_CREDENTIALS(3008, "Invalid credentials", HttpStatus.UNAUTHORIZED),
     UNAUTHORIZED(3009, "Unauthorized", HttpStatus.UNAUTHORIZED),
     OTP_VERIFY_LIMIT_REACHED(3010, "OTP verify is blocked because send limit was exceeded", HttpStatus.TOO_MANY_REQUESTS),
+    INVALID_DEVICE_ID(3011, "Invalid Device ID", HttpStatus.BAD_REQUEST),
+    SESSION_INACTIVE(3012, "Session inactive", HttpStatus.UNAUTHORIZED),
+    TOKEN_REUSE_DETECTED(3013,  "Token reuse detected" , HttpStatus.UNAUTHORIZED ),
+    ACCESS_TOKEN_EXPIRED(3015, "Access token expired", HttpStatus.UNAUTHORIZED),
+    SESSION_DEVICE_MISMATCH(3016, "Session device mismatch", HttpStatus.UNAUTHORIZED),
     
 
     // ===== Validation =====
@@ -36,13 +39,12 @@ public enum ErrorCode {
     PASSWORD_MISMATCH(2004, "Password and confirm password does not match", HttpStatus.BAD_REQUEST),
     USER_INACTIVE(2005, "User account is inactive", HttpStatus.FORBIDDEN),
     ACCOUNT_BANNED(2007, "An account using this email was banned", HttpStatus.FORBIDDEN),
-    OTP_SEND_LIMIT_REACHED(2008, "OTP was resend too many time", HttpStatus.TOO_MANY_REQUESTS),
+
     RESEND_OTP_BLOCKED(2009,"Resend OTP blocked" ,HttpStatus.CONFLICT ),
     TOKEN_REVOKED(2010, "Token has been revoked", HttpStatus.UNAUTHORIZED),
 
     // ===== System =====
-    INTERNAL_ERROR(9999, "Internal server error", HttpStatus.INTERNAL_SERVER_ERROR),
-    ;
+    INTERNAL_ERROR(9999, "Internal server error", HttpStatus.INTERNAL_SERVER_ERROR);
 
     ErrorCode(int code, String message, HttpStatusCode httpStatusCode) {
         this.code = code;

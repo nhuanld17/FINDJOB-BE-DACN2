@@ -32,7 +32,7 @@ public class EmailService {
         }
     }
 
-    @Async
+    @Async("emailTaskExecutor")
     public void sendOtpEmail(String to, String username, String otp) {
         Context context = new Context();
         context.setVariable("username", username);
@@ -43,7 +43,7 @@ public class EmailService {
         sendHtmlEmail(to, "Your OTP Code", content);
     }
 
-    @Async
+    @Async("emailTaskExecutor")
     public void sendWelcomeEmail(String to, String username) {
         Context context = new Context();
         context.setVariable("username", username);

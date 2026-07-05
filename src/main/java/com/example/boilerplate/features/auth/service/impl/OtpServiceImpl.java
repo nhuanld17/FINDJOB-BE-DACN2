@@ -70,11 +70,11 @@ public class OtpServiceImpl implements OtpService {
     private final StringRedisTemplate redisTemplate;
     private final RedisService redisService;
 
-    private static final long OTP_TTL_SECONDS  = 5 * 60L;  // 5 phút
-    private static final long COOLDOWN_SECONDS = 60L;       // 60 giây
-    private static final long ATTEMPTS_WINDOW  = 3600L;     // 1 giờ (fixed-window)
-    private static final int  MAX_ATTEMPTS     = 5;
-    private static final int  MAX_WRONG        = 5;
+    public static final long OTP_TTL_SECONDS  = 5 * 60L;  // 5 phút
+    public static final long COOLDOWN_SECONDS = 60L;       // 60 giây
+    public static final long ATTEMPTS_WINDOW  = 3600L;     // 1 giờ (fixed-window)
+    public static final int  MAX_ATTEMPTS     = 5;
+    public static final int  MAX_WRONG        = 5;
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
@@ -158,6 +158,10 @@ public class OtpServiceImpl implements OtpService {
     @Override
     public long incrementAttempts(Long userId) {
         String key = "otp:attempts:" + userId;
+
+        // Dùng lệnh INCR của redis:
+        // Nếu key chưa tồn tại, redis tự tạo key với giá trị là 1
+        // Nếu đã tồn tại, nó sẽ tăng giá trị lên 1
         Long current = redisTemplate.opsForValue().increment(key);
         if (current != null && current == 1) {
             redisTemplate.expire(key, ATTEMPTS_WINDOW, TimeUnit.SECONDS);
@@ -203,7 +207,17 @@ public class OtpServiceImpl implements OtpService {
     @Override
     public long incrementWrong(Long userId) {
         String key = "otp:wrong:" + userId;
+
+        // Tăng số lần nhập OTP sai lên 1.
+        // Nếu key chưa tồn tại, Redis sẽ tự tạo key với giá trị 1.
         Long current = redisTemplate.opsForValue().increment(key);
+
+        // Khi key vừa được tạo (current == 1), cần thiết lập TTL.
+        // Redis không tự gán TTL cho key được tạo bởi lệnh INCR.
+        if (current != null && current == 1) {
+            redisTemplate.expire(key, OTP_TTL_SECONDS, TimeUnit.SECONDS);
+        }
+
         return current != null ? current : 1L;
     }
 
@@ -302,6 +316,11 @@ public class OtpServiceImpl implements OtpService {
         if (tokenToDelete != null && !tokenToDelete.isBlank()) {
             redisService.delete("pending:" + tokenToDelete);
         }
+    }
+
+    @Override
+    public long getOtpTtl(Long id) {
+        return redisTemplate.getExpire("otp:" + id) != null ? redisTemplate.getExpire("otp:" + id) : -2L;
     }
 }
 
