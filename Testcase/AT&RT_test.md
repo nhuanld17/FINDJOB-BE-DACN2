@@ -304,9 +304,9 @@ Thứ tự guard trong `refreshToken()`: **cookie tồn tại → parse claim �
 - HTTP 200, `data.code = 4001`, có `accessToken` **mới**.
 - Header `Set-Cookie: refreshToken=RT_2` (khác `RT_1`) — token rotation.
 - Redis: `session:{sid}.refreshJtiCurrent` = `jti_2` (jti của RT_2, khác `jti_1`); `lastSeen` cập nhật.
-- `blacklist:refresh:{jti_1}` được tạo (RT cũ bị thu hồi).
+- **KHÔNG** tạo `blacklist:refresh:{jti_1}`. Refresh cố ý không blacklist RT cũ — RT_1 hết hiệu lực chỉ vì `refreshJtiCurrent` đã đổi sang `jti_2`, nên nếu bị replay sẽ dính reuse-detection (xem TC-RT-08) chứ không phải guard blacklist.
 
-**Điểm verify đặc biệt:** so `refreshJtiCurrent` trước/sau — phải đổi từ `jti_1` sang `jti_2`.
+**Điểm verify đặc biệt:** so `refreshJtiCurrent` trước/sau — phải đổi từ `jti_1` sang `jti_2`. Đồng thời `redis-cli EXISTS blacklist:refresh:<jti_1>` = `0` (refresh KHÔNG blacklist RT cũ).
 
 ---
 
@@ -330,10 +330,11 @@ Thứ tự guard trong `refreshToken()`: **cookie tồn tại → parse claim �
 
 **Mục tiêu:** Xác nhận guard `isRefreshTokenRevoked(jti)` chặn mọi RT có `jti` nằm trong `blacklist:refresh:{jti}`, và guard này chạy **trước** guard session — bất kể session còn hay mất.
 
-**Bối cảnh RT bị blacklist (3 nguồn — code):** một `jti` RT bị đưa vào `blacklist:refresh` khi:
+**Bối cảnh RT bị blacklist (2 nguồn — code):** một `jti` RT bị đưa vào `blacklist:refresh` khi:
 1. **Logout** (`logout()`): blacklist `refreshJtiCurrent` của session (TC-LO-01).
-2. **Refresh thành công** (`refreshToken()`): blacklist `jti` của RT **cũ** vừa bị xoay (TC-RT-01).
-3. **Phát hiện reuse** (`refreshToken()`): blacklist `jti` của RT bị replay (TC-RT-08).
+2. **Phát hiện reuse** (`refreshToken()`): blacklist `jti` của RT bị replay (TC-RT-08).
+
+> Lưu ý: refresh thành công **KHÔNG** blacklist RT cũ (cố ý — xem TC-RT-01). RT cũ chết nhờ `refreshJtiCurrent` đã đổi, không phải nhờ blacklist. Đây là điểm mấu chốt để reuse-detection (3013) không bị guard blacklist (2010) che mất.
 
 TTL của key blacklist = `remainingTimeOf(RT)` (thời gian sống còn lại của chính RT đó).
 
@@ -358,17 +359,11 @@ TTL của key blacklist = `remainingTimeOf(RT)` (thời gian sống còn lại c
 
 ---
 
-#### Sub-case 4b: RT cũ bị thu hồi sau khi REFRESH (đường xoay token)
+#### Sub-case 4b: (ĐÃ GỠ) — replay RT cũ sau refresh KHÔNG còn ra 2010
 
-**Điều kiện tiên quyết:**
-1. POST `/login` → copy `RT_1`.
-2. POST `/refresh-token` (RT_1) → 200, nhận `RT_2`; lúc này `RT_1.jti` bị blacklist còn session vẫn `ACTIVE`.
+Trước đây refresh thành công có blacklist RT cũ, nên replay RT cũ ra **2010** (blacklist bắt trước reuse). **Đã bỏ hành vi đó** (Hướng B): refresh không blacklist RT cũ nữa, nên replay RT cũ giờ rơi đúng vào guard reuse → **3013 + session REVOKED**. Kịch bản này giờ trùng với **TC-RT-08** — xem TC-RT-08.
 
-**Các bước:** POST `/refresh-token` với `Cookie: refreshToken=<RT_1>` (RT cũ).
-
-**Kỳ vọng:** HTTP 401, `code = 2010`.
-
-> **Phân biệt với TC-RT-08 (reuse 3013):** ở đây session vẫn `ACTIVE` nhưng RT_1 đã bị blacklist ở bước refresh → guard blacklist bắt trước → **2010**. Guard reuse (`jti != refreshJtiCurrent` → **3013**) chỉ chạm tới khi RT **chưa** nằm trong blacklist. Nói cách khác: replay RT cũ ngay sau 1 lần refresh sẽ ra **2010** (vì đã blacklist), còn 3013 xảy ra với RT cũ **chưa** bị blacklist (ví dụ RT bị bỏ qua giữa chuỗi, hoặc blacklist đã hết TTL).
+Nói cách khác: 2010 tại `/refresh-token` giờ **chỉ** đến từ 2 đường — logout (sub-4a) và blacklist thủ công / đường explicit (sub-4c). Không còn đường "RT cũ tự bị blacklist sau refresh".
 
 ---
 
@@ -447,6 +442,8 @@ TTL của key blacklist = `remainingTimeOf(RT)` (thời gian sống còn lại c
 - Cookie bị xóa.
 
 **Điểm verify đặc biệt:** sau bước 2, `HGET session:<sid> status` = `REVOKED`. Đây là cơ chế "một RT cũ bị replay ⇒ vô hiệu hóa toàn bộ phiên".
+
+> **Ghi chú (sau fix Hướng B):** đây giờ là đường chạm 3013 **chính thức và luôn xảy ra**, không còn bị guard blacklist (2010) che. Trước fix, do refresh tự blacklist RT cũ nên bước 2 chỉ ra 2010 và session vẫn ACTIVE — reuse-detection coi như chết. Sau khi gỡ blacklist chủ động, replay RT cũ luôn rơi vào guard reuse → 3013 + REVOKED như kỳ vọng.
 
 ---
 
@@ -538,13 +535,13 @@ TTL của key blacklist = `remainingTimeOf(RT)` (thời gian sống còn lại c
 **Các bước:**
 1. POST `/login` → `AT_1`, `RT_1`, `sid`.
 2. GET `/ping` với `AT_1` → 200 (TC-AT-01).
-3. POST `/refresh-token` (RT_1) → `AT_2`, `RT_2`; `RT_1` bị blacklist.
+3. POST `/refresh-token` (RT_1) → `AT_2`, `RT_2`; `RT_1` hết hiệu lực (jti không còn khớp `refreshJtiCurrent`), **không** bị blacklist.
 4. GET `/ping` với `AT_2` → 200.
 5. POST `/logout` với `Authorization: Bearer <AT_2>` + cookie `RT_2`.
 6. Kiểm tra:
-   - GET `/ping` với `AT_2` → **2010** (revoked).
-   - POST `/refresh-token` với `RT_2` → **2010** (revoked).
-   - POST `/refresh-token` với `RT_1` (cũ) → **2010** (đã revoke từ bước 3).
+   - GET `/ping` với `AT_2` → **2010** (revoked — logout blacklist AT_2).
+   - POST `/refresh-token` với `RT_2` → **2010** (revoked — logout blacklist `refreshJtiCurrent` = jti_2).
+   - POST `/refresh-token` với `RT_1` (cũ) → **3012** (session đã bị xóa khi logout; RT_1 không bị blacklist nên rơi vào guard "session tồn tại").
 
 **Kỳ vọng:** Sau logout, không token nào của phiên còn dùng được. `session:{sid}` bị xóa.
 
@@ -564,6 +561,8 @@ TTL của key blacklist = `remainingTimeOf(RT)` (thời gian sống còn lại c
 **Kỳ vọng:** Chuỗi 1→2→3 mượt; replay bất kỳ RT cũ nào → 3013 và **giết cả phiên**, khiến RT hiện hành cũng chết theo.
 
 **Điểm verify đặc biệt:** bước 5 chứng minh tính chất bảo mật: reuse-detection không chỉ chặn token cũ mà **vô hiệu hóa toàn bộ session** (buộc đăng nhập lại).
+
+> **Ghi chú (sau fix Hướng B):** ở bước 4, `RT_2` là RT đã bị xoay ở bước 3 nhưng **không** bị blacklist (refresh không blacklist RT cũ nữa), nên đi thẳng vào guard reuse (`jti != refreshJtiCurrent`) → **3013 + REVOKED** đúng như kỳ vọng. Trước fix, `RT_2` bị blacklist ngay khi xoay nên bước 4 chỉ ra 2010 và session vẫn sống — test này khi đó SAI so với code. Giờ đã khớp.
 
 ---
 
@@ -636,7 +635,7 @@ TTL của key blacklist = `remainingTimeOf(RT)` (thời gian sống còn lại c
 - [ ] Cookie `refreshToken`: **set mới** khi login & refresh thành công (rotation); **xóa** (Max-Age=0) khi logout / lỗi refresh; **không đổi** với các lỗi tại filter.
 - [ ] `Set-Cookie` giữ đủ thuộc tính: HttpOnly, Secure, SameSite=Strict.
 - [ ] Redis session: `status` đúng (`ACTIVE`/`REVOKED`); `refreshJtiCurrent` **đổi sau mỗi refresh**; `lastSeen` cập nhật khi qua filter/refresh; session **bị xóa** sau logout.
-- [ ] Blacklist: `blacklist:refresh:{jti}` tạo ở refresh (RT cũ) & logout; `blacklist:access:{jti}` chỉ tạo ở logout có gửi AT.
+- [ ] Blacklist: `blacklist:refresh:{jti}` tạo ở **reuse-detection** (RT bị replay) & logout — **KHÔNG** tạo ở refresh thành công (RT cũ chết nhờ jti đổi, không phải blacklist); `blacklist:access:{jti}` chỉ tạo ở logout có gửi AT.
 - [ ] `user:sessions:{userId}` phản ánh đúng số phiên còn sống.
 - [ ] Reuse (RT-08/E2E-02): sau khi phát hiện, `session.status = REVOKED` và mọi token của phiên đều chết.
 - [ ] Dọn dẹp DB sau các TC sửa `is_deleted`/`is_active`/`username`.
