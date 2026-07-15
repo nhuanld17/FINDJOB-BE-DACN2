@@ -16,6 +16,9 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
+import org.springframework.security.oauth2.client.web.DefaultOAuth2AuthorizationRequestResolver;
+import org.springframework.security.oauth2.client.web.OAuth2AuthorizationRequestResolver;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
@@ -45,6 +48,9 @@ public class SecurityConfig {
             "/actuator/health"
     };
 
+    // Base URI mặc định của Spring cho endpoint khởi tạo login: /oauth2/authorization/{registrationId}
+    private static final String AUTHORIZATION_BASE_URI = "/oauth2/authorization";
+
     public static RequestMatcher[] publicMatchers() {
         return Arrays.stream(PUBLIC_PATTERNS)
                 .map(AntPathRequestMatcher::new)
@@ -52,7 +58,8 @@ public class SecurityConfig {
     }
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http,
+                                                   ClientRegistrationRepository clientRegistrationRepository) throws Exception {
         http
                 // withDefaults() tự động tìm bean tên "corsConfigurationSource" trong
                 // application context và áp dụng CORS từ đó — xem CorsConfig.corsConfigurationSource()
@@ -70,10 +77,28 @@ public class SecurityConfig {
                         .requestMatchers(PUBLIC_PATTERNS).permitAll()
                                 .anyRequest().authenticated()
                         )
+                .oauth2Login(oauth2 -> oauth2
+                        .authorizationEndpoint(authz -> authz
+                                .authorizationRequestResolver(
+                                        offlineAccessResolver(clientRegistrationRepository)
+                                )
+                        )
+                )
                 .authenticationProvider(daoAuthenticationProvider())
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
+    }
+
+    private OAuth2AuthorizationRequestResolver offlineAccessResolver(ClientRegistrationRepository clientRegistrationRepository) {
+        DefaultOAuth2AuthorizationRequestResolver resolver =
+                new DefaultOAuth2AuthorizationRequestResolver(clientRegistrationRepository, AUTHORIZATION_BASE_URI);
+        resolver.setAuthorizationRequestCustomizer(customizer ->
+                customizer.additionalParameters(params -> {
+                    params.put("access_type", "offline");
+                    params.put("prompt", "consent");
+                }));
+        return resolver;
     }
 
     @Bean

@@ -1,6 +1,7 @@
 package com.example.boilerplate.infrastructure.security;
 
 import com.example.boilerplate.common.constant.ErrorCode;
+import com.example.boilerplate.common.exception.CustomAuthException;
 import com.example.boilerplate.common.response.ErrorResponse;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
