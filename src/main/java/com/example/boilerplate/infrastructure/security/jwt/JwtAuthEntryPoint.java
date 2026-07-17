@@ -1,4 +1,4 @@
-package com.example.boilerplate.infrastructure.security;
+package com.example.boilerplate.infrastructure.security.jwt;
 
 import com.example.boilerplate.common.constant.ErrorCode;
 import com.example.boilerplate.common.exception.CustomAuthException;

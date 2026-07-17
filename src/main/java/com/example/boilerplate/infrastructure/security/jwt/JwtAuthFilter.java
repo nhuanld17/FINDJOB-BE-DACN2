@@ -1,9 +1,13 @@
-package com.example.boilerplate.infrastructure.security;
+package com.example.boilerplate.infrastructure.security.jwt;
 
 import com.example.boilerplate.common.constant.ErrorCode;
 import com.example.boilerplate.common.exception.CustomAuthException;
 import com.example.boilerplate.features.auth.service.TokenBlacklistService;
 import com.example.boilerplate.infrastructure.redis.RedisService;
+import com.example.boilerplate.infrastructure.security.CustomUserDetails;
+import com.example.boilerplate.infrastructure.security.SecurityConfig;
+import com.example.boilerplate.infrastructure.security.UserDetailsServiceImpl;
+import com.example.boilerplate.infrastructure.security.oauth2.JwtUtil;
 import io.jsonwebtoken.ExpiredJwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;

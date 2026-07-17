@@ -18,7 +18,7 @@ import com.example.boilerplate.features.user.repository.UserRepository;
 import com.example.boilerplate.infrastructure.mail.EmailService;
 import com.example.boilerplate.infrastructure.redis.RedisService;
 import com.example.boilerplate.infrastructure.security.CustomUserDetails;
-import com.example.boilerplate.infrastructure.security.JwtUtil;
+import com.example.boilerplate.infrastructure.security.oauth2.JwtUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;

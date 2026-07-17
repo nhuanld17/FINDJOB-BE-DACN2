@@ -1,4 +1,4 @@
-package com.example.boilerplate.infrastructure.security;
+package com.example.boilerplate.infrastructure.security.oauth2;
 
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.Jwts;

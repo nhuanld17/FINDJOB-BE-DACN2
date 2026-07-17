@@ -1,5 +1,6 @@
 package com.example.boilerplate.infrastructure.security;
 
+import com.example.boilerplate.infrastructure.security.jwt.JwtAuthFilter;
 import com.example.boilerplate.infrastructure.security.oauth2.CustomOidcUserService;
 import com.example.boilerplate.infrastructure.security.oauth2.OidcLoginFailureHandler;
 import com.example.boilerplate.infrastructure.security.oauth2.OidcLoginSuccessHandler;

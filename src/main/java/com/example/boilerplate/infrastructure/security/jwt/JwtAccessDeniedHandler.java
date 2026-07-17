@@ -1,4 +1,4 @@
-package com.example.boilerplate.infrastructure.security;
+package com.example.boilerplate.infrastructure.security.jwt;
 
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
