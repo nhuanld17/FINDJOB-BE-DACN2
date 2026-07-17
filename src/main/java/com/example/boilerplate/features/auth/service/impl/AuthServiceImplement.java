@@ -22,6 +22,7 @@ import com.example.boilerplate.infrastructure.security.JwtUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.http.ResponseCookie;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -41,6 +42,7 @@ import java.util.concurrent.TimeUnit;
 public class AuthServiceImplement implements AuthService {
 
     private static final long PENDING_TTL_MINUTES = 10L;
+    private static final String TICKET_KEY_PREFIX = "oauth2:ticket:";
 
     private final RedisService redisService;
     private final UserRepository userRepository;
@@ -52,6 +54,7 @@ public class AuthServiceImplement implements AuthService {
     private final JwtUtil jwtUtil;
     private final TokenBlacklistService tokenBlacklistService;
     private final RequestUtils requestUtils;
+    private final RedisTemplate<String, Object> redisTemplate;
 
     @Override
     @Transactional
@@ -583,11 +586,6 @@ public class AuthServiceImplement implements AuthService {
         // Password đã đúng -> giờ mới check trạng thái nghiệp vụ
         CustomUserDetails userDetails = (CustomUserDetails) authenticatedToken.getPrincipal();
 
-        // Nếu tài khoản bị xóa
-        if (userDetails.isDeleted()) {
-            throw new AppException(ErrorCode.ACCOUNT_BANNED);
-        }
-
         // Tài khoản chưa active: trả về LoginInactiveResponse (HTTP 200)
         // mang đầy đủ thông tin OTP (otpExpiresIn/cooldownRemaining/wrongRemaining + code)
         // để FE chuyển sang trang verify OTP. Các nhánh dead-end thật vẫn throw bên trong.
@@ -595,47 +593,14 @@ public class AuthServiceImplement implements AuthService {
             return handleInactiveUserLogin(userDetails, httpServletResponse, pendingToken);
         }
 
-        // Tạo sessionId đại diện cho phiên đăng nhập của user hiện tại
-        String sessionId = UUID.randomUUID().toString();
-
-        // Tạo accessToken và refreshToken dựa trên thông tin của User
-        // trong đó có jti (UUID) và sessionId (UUID) và deviceId (UUID)
-        String accessToken = jwtUtil.generateAccessToken(userDetails, sessionId, loginRequest.deviceId().toString());
-        String refreshToken = jwtUtil.generateRefreshToken(userDetails, sessionId, loginRequest.deviceId().toString());
-
-        // Lưu session vào redis
-        redisService.createSession(
-                sessionId,
-                userDetails.getUsername(),
+        // Tạo session cho user
+        return createUserSession(
+                userDetails.getId(),
                 loginRequest.deviceId().toString(),
-                jwtUtil.extractJti(refreshToken),
                 loginRequest.deviceName(),
                 requestUtils.getClientIp(httpServletRequest),
-                requestUtils.getUserAgent(httpServletRequest)
-        );
-
-        // Lưu sessionId vào danh sách session của user hiện tại
-        redisService.addSessionToUser(userDetails.getId().toString(), sessionId);
-
-        // Thêm refreshToken vào cookie HttpOnly
-        writeCookie(
-                httpServletResponse,
-                "refreshToken",
-                refreshToken,
-                true,
-                true,
-                "/",
-                "Strict",
-                7 * 24 * 60 * 60L
-        );
-
-        // trả về thông tin của user (jti, username, roles, access token)
-        return new AuthResponse(
-                SuccessCode.LOGIN_SUCCESS.getCode(),
-                userDetails.getId(),
-                userDetails.getUsername(),
-                userDetails.getRoles(),
-                accessToken
+                requestUtils.getUserAgent(httpServletRequest),    // ← userAgent thật
+                httpServletResponse
         );
     }
 
@@ -836,6 +801,133 @@ public class AuthServiceImplement implements AuthService {
         if (currentRefreshJti != null && remainingTTLRefreshToken > 0) {
             tokenBlacklistService.revokeRefreshToken(currentRefreshJti, remainingTTLRefreshToken);
         }
+    }
+
+    @Override
+    public AuthResponse createUserSession(Long userId,
+                                          String deviceId,
+                                          String deviceName,
+                                          String ipAddress,
+                                          String userAgent,
+                                          HttpServletResponse httpServletResponse)
+    {
+
+        // 1. Kiểm tra user - preLoginCheck
+        User user = preLoginCheck(userId);
+
+        // 2. Tạo sessionId đại diện cho phiên đăng nhập của user hiện tại
+        String sessionId = UUID.randomUUID().toString();
+
+        // 3. Build UserDetails
+        CustomUserDetails userDetails = new CustomUserDetails(user);
+
+        // 4. Tạo accessToken và refreshToken dựa trên thông tin của User
+        // trong đó có jti (UUID) và sessionId (UUID) và deviceId (UUID)
+        String accessToken = jwtUtil.generateAccessToken(userDetails, sessionId, deviceId);
+        String refreshToken = jwtUtil.generateRefreshToken(userDetails, sessionId, deviceId);
+
+        // 5. Lưu session vào redis
+        redisService.createSession(
+                sessionId,
+                userDetails.getUsername(),
+                deviceId,
+                jwtUtil.extractJti(refreshToken),
+                deviceName,
+                ipAddress,
+                userAgent
+        );
+
+        // 6. Lưu sessionId vào danh sách session của user hiện tại
+        redisService.addSessionToUser(userDetails.getId().toString(), sessionId);
+
+        // 7. Thêm refreshToken vào cookie HttpOnly
+        writeCookie(
+                httpServletResponse,
+                "refreshToken",
+                refreshToken,
+                true,
+                true,
+                "/",
+                "Strict",
+                7 * 24 * 60 * 60L
+        );
+
+        // 8. Trả về thông tin của user (jti, username, roles, access token)
+        return new AuthResponse(
+                SuccessCode.LOGIN_SUCCESS.getCode(),
+                userDetails.getId(),
+                userDetails.getUsername(),
+                userDetails.getRoles(),
+                accessToken
+        );
+    }
+
+    @Override
+    public AuthResponse exchangeTicket(String ticket,
+                                       String clientIp,
+                                       String userAgent,
+                                       HttpServletResponse httpServletResponse) {
+        String redisKey = TICKET_KEY_PREFIX + ticket;
+
+        // Fix #6: Atomic delete — lấy value và xóa trong 1 bước
+        //   Dùng Redis GETDEL (Redis ≥6.2) hoặc Lua script
+        //   → 2 request song song cùng ticket chỉ 1 trong 2 lấy được value
+        String userIdStr = redisTemplate.execute(
+                new org.springframework.data.redis.core.script.DefaultRedisScript<>(
+                        "local v = redis.call('GET', KEYS[1]); " +
+                                "if v then redis.call('DEL', KEYS[1]) end; " +
+                                "return v;",
+                        String.class
+                ),
+                java.util.List.of(redisKey)
+        );
+
+        if ( userIdStr == null || userIdStr.isBlank()) {
+            throw new AppException(ErrorCode.UNAUTHORIZED);
+        }
+
+        // Parse userId
+        Long userId;
+        try {
+            userId = Long.parseLong(userIdStr);
+        } catch (NumberFormatException e) {
+            throw new AppException(ErrorCode.UNAUTHORIZED);
+        }
+
+        // Tạo device info — dùng User-Agent thật
+        String deviceId = UUID.randomUUID().toString();
+        String deviceName = "Google Login";
+
+        // Gọi createUserSession() — dùng chung
+        return createUserSession(
+                userId,
+                deviceId,
+                deviceName,
+                clientIp,
+                userAgent,
+                httpServletResponse
+        );
+    }
+
+    /**
+     * Kiểm tra trạng thái user trước khi tạo session.
+     *
+     * - User bị deleted (banned) → throw AppException(ACCOUNT_BANNED)
+     * - User không tồn tại → throw AppException(USER_NOT_FOUND)
+     *
+     * LƯU Ý: KHÔNG check isActive ở đây. Login thường xử lý inactive qua
+     * handleInactiveUserLogin() trả về LoginInactiveResponse (HTTP 200).
+     * OIDC flow xử lý inactive trong CustomOidcUserService (auto-activate).
+     */
+    private User preLoginCheck(Long userId) {
+        User user = userRepository.findByIdWithRoles(userId)
+                .orElseThrow(() -> new AppException(ErrorCode.USER_NOT_FOUND));
+
+        if (user.isDeleted()) {
+            throw new AppException(ErrorCode.ACCOUNT_BANNED);
+        }
+
+        return user;
     }
 
     private void writeCookie(

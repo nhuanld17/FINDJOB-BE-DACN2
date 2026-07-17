@@ -1,6 +1,8 @@
 package com.example.boilerplate.features.auth.controller;
 
 import com.example.boilerplate.common.response.APIResponse;
+import com.example.boilerplate.common.util.RequestUtils;
+import com.example.boilerplate.features.auth.dto.request.ExchangeTicketRequest;
 import com.example.boilerplate.features.auth.dto.request.LoginRequest;
 import com.example.boilerplate.features.auth.dto.request.RegisterRequest;
 import com.example.boilerplate.features.auth.dto.request.VerifyOtpRequest;
@@ -19,6 +21,7 @@ import org.springframework.web.bind.annotation.*;
 public class AuthController {
 
     private final AuthService authService;
+    private final RequestUtils requestUtils;
 
     @PostMapping("/register")
     public ResponseEntity<APIResponse<RegisterResponse>> register(
@@ -88,5 +91,18 @@ public class AuthController {
         return ResponseEntity.ok(APIResponse.success());
     }
 
-
+    @PostMapping("/exchange-ticket")
+    public ResponseEntity<APIResponse<AuthResponse>> exchangeTicket(
+            @RequestBody @Valid ExchangeTicketRequest request,
+            HttpServletRequest httpServletRequest,
+            HttpServletResponse httpServletResponse
+    ) {
+        AuthResponse response = authService.exchangeTicket(
+                request.ticket(),
+                requestUtils.getClientIp(httpServletRequest),
+                requestUtils.getUserAgent(httpServletRequest),
+                httpServletResponse
+        );
+        return ResponseEntity.ok(APIResponse.success(response));
+    }
 }

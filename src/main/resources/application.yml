@@ -55,6 +55,20 @@ spring:
           min-idle: 1
           max-wait: 2000ms
 
+  security:
+    oauth2:
+      client:
+        registration:
+          google:
+            client-id: ${GOOGLE_CLIENT_ID}
+            client-secret: ${GOOGLE_CLIENT_SECRET}
+            scope:
+              - openid
+              - profile
+              - email
+            redirect-uri: "{baseUrl}/login/oauth2/code/google"
+            client-name: Google
+
   flyway:
     schemas: ${DB_SCHEMA}
     default-schema: ${DB_SCHEMA}
@@ -64,3 +78,8 @@ jwt:
   secret: ${JWT_SECRET}
   access-token-expiration-ms: ${ACCESS_TOKEN_LIFETIME}
   refresh-token-expiration-ms: ${REFRESH_TOKEN_LIFETIME}
+
+app:
+  oauth2:
+    # Fix #10: Default :5173 (Vite dev server) — khớp CorsConfig
+    redirect-url: ${APP_OAUTH2_REDIRECT_URL:http://localhost:5173/oauth-callback}

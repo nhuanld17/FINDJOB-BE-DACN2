@@ -1,0 +1,4 @@
+ALTER TABLE users
+    ADD COLUMN auth_provider VARCHAR(20) NOT NULL DEFAULT 'LOCAL',
+    ADD COLUMN social_id VARCHAR(200),
+    ADD COLUMN avatar_url VARCHAR(500);

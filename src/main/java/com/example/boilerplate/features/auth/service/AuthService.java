@@ -20,4 +20,30 @@ public interface AuthService {
     AuthResponse refreshToken(String refreshToken, HttpServletResponse httpServletResponse);
 
     void logout(String refreshToken, HttpServletRequest httpServletRequest, HttpServletResponse httpServletResponse);
+
+    /**
+     * Tạo session Redis + AT/RT + set RT cookie cho user.
+     * Dùng chung cho login thường, OIDC login, exchange-ticket.
+     *
+     * @param userId ID của user
+     * @param deviceId Device ID (login thường: từ client; OIDC: tự sinh UUID)
+     * @param deviceName Tên device (login thường: từ client; OIDC: "Google Login")
+     * @param ipAddress IP của request
+     * @param userAgent User-Agent string thật từ request (để lưu session)
+     * @param httpServletResponse HttpServletResponse để set cookie
+     * @return AuthResponse chứa accessToken + user info
+     */
+    AuthResponse createUserSession(
+            Long userId,
+            String deviceId,
+            String deviceName,
+            String ipAddress,
+            String userAgent,
+            HttpServletResponse httpServletResponse
+    );
+
+    AuthResponse exchangeTicket(String ticket,
+                                String clientIp,
+                                String userAgent,
+                                HttpServletResponse httpServletResponse);
 }

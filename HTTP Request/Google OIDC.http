@@ -1,0 +1,7 @@
+POST http://localhost:8080/api/v1/auth/exchange-ticket
+Content-Type: application/json
+
+{
+  "ticket": "e8103de4-dd24-4f82-9d0d-d4f9e58951ae"
+}
+###

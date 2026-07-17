@@ -1,5 +1,8 @@
 package com.example.boilerplate.infrastructure.security;
 
+import com.example.boilerplate.infrastructure.security.oauth2.CustomOidcUserService;
+import com.example.boilerplate.infrastructure.security.oauth2.OidcLoginFailureHandler;
+import com.example.boilerplate.infrastructure.security.oauth2.OidcLoginSuccessHandler;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -7,7 +10,6 @@ import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.ProviderManager;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
 import org.springframework.security.config.Customizer;
-import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -16,16 +18,12 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
-import org.springframework.security.oauth2.client.web.DefaultOAuth2AuthorizationRequestResolver;
-import org.springframework.security.oauth2.client.web.OAuth2AuthorizationRequestResolver;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 import org.springframework.security.web.util.matcher.AntPathRequestMatcher;
 import org.springframework.security.web.util.matcher.RequestMatcher;
-import org.springframework.stereotype.Component;
 
 import java.util.Arrays;
 
@@ -42,14 +40,13 @@ public class SecurityConfig {
 
     public static final String[] PUBLIC_PATTERNS = {
             "/api/v1/auth/**",
+            "/oauth2/**",
+            "/login/oauth2/code/**",
             "/products/**",
             "/v3/api-docs/**",
             "/swagger-ui/**",
             "/actuator/health"
     };
-
-    // Base URI mặc định của Spring cho endpoint khởi tạo login: /oauth2/authorization/{registrationId}
-    private static final String AUTHORIZATION_BASE_URI = "/oauth2/authorization";
 
     public static RequestMatcher[] publicMatchers() {
         return Arrays.stream(PUBLIC_PATTERNS)
@@ -59,7 +56,9 @@ public class SecurityConfig {
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
-                                                   ClientRegistrationRepository clientRegistrationRepository) throws Exception {
+                                                   CustomOidcUserService customOidcUserService,
+                                                   OidcLoginSuccessHandler oidcLoginSuccessHandler,
+                                                   OidcLoginFailureHandler oidcLoginFailureHandler) throws Exception {
         http
                 // withDefaults() tự động tìm bean tên "corsConfigurationSource" trong
                 // application context và áp dụng CORS từ đó — xem CorsConfig.corsConfigurationSource()
@@ -78,27 +77,15 @@ public class SecurityConfig {
                                 .anyRequest().authenticated()
                         )
                 .oauth2Login(oauth2 -> oauth2
-                        .authorizationEndpoint(authz -> authz
-                                .authorizationRequestResolver(
-                                        offlineAccessResolver(clientRegistrationRepository)
-                                )
-                        )
+                        .userInfoEndpoint(userInfo -> userInfo
+                                .oidcUserService(customOidcUserService))
+                        .successHandler(oidcLoginSuccessHandler)
+                        .failureHandler(oidcLoginFailureHandler)
                 )
                 .authenticationProvider(daoAuthenticationProvider())
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
-    }
-
-    private OAuth2AuthorizationRequestResolver offlineAccessResolver(ClientRegistrationRepository clientRegistrationRepository) {
-        DefaultOAuth2AuthorizationRequestResolver resolver =
-                new DefaultOAuth2AuthorizationRequestResolver(clientRegistrationRepository, AUTHORIZATION_BASE_URI);
-        resolver.setAuthorizationRequestCustomizer(customizer ->
-                customizer.additionalParameters(params -> {
-                    params.put("access_type", "offline");
-                    params.put("prompt", "consent");
-                }));
-        return resolver;
     }
 
     @Bean

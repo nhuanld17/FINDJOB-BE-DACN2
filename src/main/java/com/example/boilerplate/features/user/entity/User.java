@@ -1,17 +1,8 @@
 package com.example.boilerplate.features.user.entity;
 
 import com.example.boilerplate.common.base.BaseEntity;
-import jakarta.persistence.Column;
-import jakarta.persistence.Entity;
-import jakarta.persistence.FetchType;
-import jakarta.persistence.GeneratedValue;
-import jakarta.persistence.GenerationType;
-import jakarta.persistence.Id;
-import jakarta.persistence.JoinColumn;
-import jakarta.persistence.JoinTable;
-import jakarta.persistence.ManyToMany;
-import jakarta.persistence.Table;
-import jakarta.persistence.UniqueConstraint;
+import com.example.boilerplate.common.constant.AuthProvider;
+import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
@@ -55,4 +46,29 @@ public class User extends BaseEntity {
             inverseJoinColumns = @JoinColumn(name = "role_id")
     )
     private Set<Role> roles = new HashSet<>();
+
+    // === OIDC Infor
+
+    /**
+     * Phương thức tạo tài khoản:
+     * - LOCAL: Login bằng username/password truyền thống
+     * - GOOGLE: Login bằng google thông qua OIDC
+     * - GITHUB: Login bằng Github thông qua OIDC
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "auth_provider", length = 20, nullable = false)
+    private AuthProvider authProvider = AuthProvider.LOCAL;
+
+    /**
+     * social_Id = sub trong token id là định danh duy nhất và ổn định của
+     * người dùng đối với một provider.
+     */
+    @Column(name = "social_id", length = 200)
+    private String socialId;
+
+    /**
+     * link url ảnh đại diện
+     */
+    @Column(name = "avatar_url", length = 500)
+    private String avatarUrl;
 }
