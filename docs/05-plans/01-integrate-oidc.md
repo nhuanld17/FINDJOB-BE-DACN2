@@ -29,11 +29,11 @@
 ## 📐 KIẾN TRÚC TỔNG THỂ
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        OIDC FLOW — One-time Ticket Redirect                 │
-├─────────────────────────────────────────────────────────────────────────────┤
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                        OIDC FLOW — One-time Ticket Redirect                  │
+├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│  SPA (FE) :5173                 Backend :8080              Google             │
+│  SPA (FE) :5173                 Backend :8080              Google            │
 │    │                                │                        │               │
 │    │  Click "Login with Google"     │                        │               │
 │    │  window.location =             │                        │               │
@@ -53,22 +53,22 @@
 │    │  ?code=xxx&state=yyy           │                        │               │
 │    │◄───────────────────────────────│                        │               │
 │    │                                │                        │               │
-│    │  ┌──── Spring Security xử lý ──┐                       │               │
-│    │  │ 1. Validate state           │                       │               │
-│    │  │ 2. Exchange code → token    │                       │               │
-│    │  │ 3. Validate ID token        │                       │               │
-│    │  │ 4. CustomOidcUserService    │                       │               │
-│    │  │ 5. OidcLoginSuccessHandler  │                       │               │
-│    │  └─────────────────────────────┘                       │               │
+│    │  ┌──── Spring Security xử lý ──┐                        │               │
+│    │  │ 1. Validate state           │                        │               │
+│    │  │ 2. Exchange code → token    │                        │               │
+│    │  │ 3. Validate ID token        │                        │               │
+│    │  │ 4. CustomOidcUserService    │                        │               │
+│    │  │ 5. OidcLoginSuccessHandler  │                        │               │
+│    │  └─────────────────────────────┘                        │               │
 │    │                                │                        │               │
 │    │  ←── redirect 302 ─────────────│                        │               │
 │    │  http://localhost:5173/        │                        │               │
 │    │  oauth-callback?ticket=<uuid>  │                        │               │
 │    │                                │                        │               │
-│    │  ┌── FE lấy ticket từ URL ─────┐                       │               │
-│    │  │ window.location.search      │                       │               │
-│    │  │ → "?ticket=abc-123"         │                       │               │
-│    │  └─────────────────────────────┘                       │               │
+│    │  ┌── FE lấy ticket từ URL ─────┐                        │               │
+│    │  │ window.location.search      │                        │               │
+│    │  │ → "?ticket=abc-123"         │                        │               │
+│    │  └─────────────────────────────┘                        │               │
 │    │                                │                        │               │
 │    │  POST /api/v1/auth/            │                        │               │
 │    │  exchange-ticket               │                        │               │
@@ -79,9 +79,9 @@
 │    │                                │  → createUserSession() │               │
 │    │                                │                        │               │
 │    │  ←── JSON { accessToken,  ─────│                        │               │
-│    │  user }                       │                        │               │
+│    │  user }                        │                        │               │
 │    │                                │                        │               │
-└─────────────────────────────────────────────────────────────────────────────┘
+└──────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -161,24 +161,24 @@ Thay vì cố trả JSON (bất khả thi), backend:
 Trình duyệt                            Backend :8080                      Redis
   │                                        │                               │
   │  (Sau Google callback)                 │                               │
-  │  ←── redirect 302 ────────────────────│                               │
-  │  ?ticket=abc-123                      │                               │
+  │  ←── redirect 302 ─────────────────────│                               │
+  │  ?ticket=abc-123                       │                               │
   │                                        │                               │
   │  ┌── FE parse URL ──────────────────┐  │                               │
   │  │ ticket = urlParams.get("ticket") │  │                               │
   │  └──────────────────────────────────┘  │                               │
   │                                        │                               │
-  │  POST /exchange-ticket                │                               │
-  │  { "ticket": "abc-123" }              │                               │
-  │ ─────────────────────────────────────→│                               │
+  │  POST /exchange-ticket                 │                               │
+  │  { "ticket": "abc-123" }               │                               │
+  │ ──────────────────────────────────────→│                               │
   │                                        │  Lua: GET + DEL (atomic)      │
-  │                                        │ ────────────────────────────→│
-  │                                        │  ←── userId ────────────────│
+  │                                        │ ─────────────────────────────→│
+  │                                        │  ←── userId ──────────────────│
   │                                        │                               │
-  │                                        │  createUserSession(userId,..)│
+  │                                        │  createUserSession(userId,..) │
   │                                        │                               │
-  │  ←── JSON ────────────────────────────│                               │
-  │  { accessToken, user }                │                               │
+  │  ←── JSON ─────────────────────────────│                               │
+  │  { accessToken, user }                 │                               │
 ```
 
 #### 3. Tại sao gọi là **ONE-TIME TICKET**?

@@ -1,5 +1,6 @@
 package com.example.boilerplate.features.auth.service.impl;
 
+import com.example.boilerplate.common.constant.AccountType;
 import com.example.boilerplate.common.constant.ErrorCode;
 import com.example.boilerplate.common.constant.RoleEnum;
 import com.example.boilerplate.common.constant.SuccessCode;
@@ -12,6 +13,7 @@ import com.example.boilerplate.features.auth.dto.response.*;
 import com.example.boilerplate.features.auth.service.AuthService;
 import com.example.boilerplate.features.auth.service.OtpService;
 import com.example.boilerplate.features.auth.service.TokenBlacklistService;
+import com.example.boilerplate.features.company.service.CompanyService;
 import com.example.boilerplate.features.user.entity.User;
 import com.example.boilerplate.features.user.repository.RoleRepository;
 import com.example.boilerplate.features.user.repository.UserRepository;
@@ -23,6 +25,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.ResponseCookie;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -34,6 +37,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
@@ -55,6 +59,8 @@ public class AuthServiceImplement implements AuthService {
     private final TokenBlacklistService tokenBlacklistService;
     private final RequestUtils requestUtils;
     private final RedisTemplate<String, Object> redisTemplate;
+    private final StringRedisTemplate stringRedisTemplate;
+    private final CompanyService companyService;
 
     @Override
     @Transactional
@@ -63,6 +69,14 @@ public class AuthServiceImplement implements AuthService {
         // Kiểm tra mật khẩu và mật khẩu xác nhận có khớp không
         if (!request.password().trim().equals(request.confirmPassword().trim())) {
             throw new AppException(ErrorCode.PASSWORD_MISMATCH);
+        }
+
+        // Employer bắt buộc phải có tên công ty
+        AccountType accountType = request.accountType() == null
+                ? AccountType.USER : request.accountType();
+        if (accountType == AccountType.EMPLOYER
+                && (request.companyName() == null || request.companyName().isBlank())) {
+            throw new AppException(ErrorCode.COMPANY_NAME_REQUIRED);
         }
 
         // Email đã được dùng bởi tài khoản đang hoạt động - ACTIVE
@@ -96,6 +110,9 @@ public class AuthServiceImplement implements AuthService {
             user.setPassword(passwordEncoder.encode(request.password().trim()));
             user.setActive(false);
             user.setDeleted(false);
+            user.setPendingAccountType(accountType);
+            user.setPendingCompanyName(accountType == AccountType.EMPLOYER
+                    ? request.companyName().trim() : null);
             userRepository.save(user);
         }
         // Nếu chưa có tài khoản thì tạo mới
@@ -107,6 +124,9 @@ public class AuthServiceImplement implements AuthService {
             user.setEmail(email);
             user.setActive(false);
             user.setDeleted(false);
+            user.setPendingAccountType(accountType);
+            user.setPendingCompanyName(accountType == AccountType.EMPLOYER
+                    ? request.companyName().trim() : null);
             userRepository.save(user);
         }
 
@@ -394,18 +414,36 @@ public class AuthServiceImplement implements AuthService {
                 () -> new AppException(ErrorCode.USER_NOT_FOUND)
         );
 
-        // Gán ROLE_USER mặc định khi verify thành công (nếu user chưa có role này)
-        boolean hasUserRole = user.getRoles() != null &&
-                user.getRoles().stream().anyMatch(role -> role.getName() == RoleEnum.USER);
+        // Gán role theo intent đăng ký: EMPLOYER → COMPANY, còn lại → USER
+        AccountType accountType = user.getPendingAccountType() != null
+                ? user.getPendingAccountType() : AccountType.USER;
 
-        if (!hasUserRole) {
-            var defaultRole = roleRepository.findByName(RoleEnum.USER)
-                .orElseThrow(() -> new AppException(ErrorCode.INTERNAL_ERROR));
-            user.getRoles().add(defaultRole);
+        RoleEnum targetRole = (accountType == AccountType.EMPLOYER)
+                ? RoleEnum.COMPANY : RoleEnum.USER;
+
+        boolean hasTargetRole = user.getRoles() != null &&
+                user.getRoles().stream().anyMatch(role -> role.getName() == targetRole);
+
+        if (!hasTargetRole) {
+            var role = roleRepository.findByName(targetRole)
+                    .orElseThrow(() -> new AppException(ErrorCode.INTERNAL_ERROR));
+            user.getRoles().add(role);
         }
 
+        String pendingCompanyName = user.getPendingCompanyName();
+
         user.setActive(true);
+        user.setPendingAccountType(null);   // intent đã dùng xong, clear
+        user.setPendingCompanyName(null);
         userRepository.save(user);
+
+        // Employer: tự tạo company (idempotent, cùng transaction với activate)
+        if (accountType == AccountType.EMPLOYER) {
+            String companyName = (pendingCompanyName != null &&
+                    !pendingCompanyName.isBlank())
+                    ? pendingCompanyName : user.getUsername(); // phòng hờ intent thiếu tên
+            companyService.createCompanyForOwner(user, companyName);
+        }
 
         // Dọn state otp sau khi verify thành công
         otpService.clearAll(user.getId());
@@ -872,14 +910,14 @@ public class AuthServiceImplement implements AuthService {
         // Fix #6: Atomic delete — lấy value và xóa trong 1 bước
         //   Dùng Redis GETDEL (Redis ≥6.2) hoặc Lua script
         //   → 2 request song song cùng ticket chỉ 1 trong 2 lấy được value
-        String userIdStr = redisTemplate.execute(
+        String userIdStr = stringRedisTemplate.execute(
                 new org.springframework.data.redis.core.script.DefaultRedisScript<>(
                         "local v = redis.call('GET', KEYS[1]); " +
                                 "if v then redis.call('DEL', KEYS[1]) end; " +
                                 "return v;",
                         String.class
                 ),
-                java.util.List.of(redisKey)
+                List.of(redisKey)
         );
 
         if ( userIdStr == null || userIdStr.isBlank()) {

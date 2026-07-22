@@ -33,6 +33,21 @@
 
 ---
 
+## 📚 Documentation
+
+Toàn bộ tài liệu kỹ thuật đã được tổ chức lại trong thư mục [`docs/`](docs/README.md):
+
+| Khu vực | Mô tả |
+|---------|-------|
+| [`docs/01-auth/`](docs/01-auth/) | 🔐 Tài liệu Authentication (Register, Login, OTP, Session, Token, JWT Filter, Refresh, Logout, Revoke) |
+| [`docs/02-oidc/`](docs/02-oidc/) | 🔑 OIDC Google Login (login flow, redirect) |
+| [`docs/03-api-contracts/`](docs/03-api-contracts/) | 📋 API Contracts cho FE |
+| [`docs/04-test-cases/`](docs/04-test-cases/) | 🧪 Test Cases (auth, AT/RT, manual test template) |
+| [`docs/05-plans/`](docs/05-plans/) | 📝 Development Plans (OIDC integration) |
+| [`docs/notes/`](docs/notes/) | 📓 Ghi chú (SonarQube setup) |
+
+---
+
 ## ✨ Features
 
 ### 🔐 Authentication

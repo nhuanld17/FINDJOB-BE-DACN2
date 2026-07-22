@@ -59,7 +59,8 @@ public class SecurityConfig {
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
                                                    CustomOidcUserService customOidcUserService,
                                                    OidcLoginSuccessHandler oidcLoginSuccessHandler,
-                                                   OidcLoginFailureHandler oidcLoginFailureHandler) throws Exception {
+                                                   OidcLoginFailureHandler oidcLoginFailureHandler,
+                                                   RedisOAuth2AuthorizationRequestRepository cookieRepo) throws Exception {
         http
                 // withDefaults() tự động tìm bean tên "corsConfigurationSource" trong
                 // application context và áp dụng CORS từ đó — xem CorsConfig.corsConfigurationSource()
@@ -78,6 +79,8 @@ public class SecurityConfig {
                                 .anyRequest().authenticated()
                         )
                 .oauth2Login(oauth2 -> oauth2
+                        .authorizationEndpoint(auth -> auth
+                                .authorizationRequestRepository(cookieRepo))
                         .userInfoEndpoint(userInfo -> userInfo
                                 .oidcUserService(customOidcUserService))
                         .successHandler(oidcLoginSuccessHandler)

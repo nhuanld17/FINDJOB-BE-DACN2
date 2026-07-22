@@ -1,12 +1,12 @@
 package com.example.boilerplate.features.user.entity;
 
 import com.example.boilerplate.common.base.BaseEntity;
+import com.example.boilerplate.common.constant.AccountType;
 import com.example.boilerplate.common.constant.AuthProvider;
 import jakarta.persistence.*;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
-
 import java.util.HashSet;
 import java.util.Set;
 
@@ -27,17 +27,27 @@ public class User extends BaseEntity {
     @Column(nullable = false)
     private String username;
 
-    @Column(nullable = false, unique = true)
+    @Column(nullable = false)
     private String email;
 
     @Column(nullable = false)
     private String password;
 
-    @Column(name = "full_name")
+    @Column(name = "full_name", length = 100)
     private String fullName;
 
     @Column(name = "is_active", nullable = false)
     private boolean isActive = false;
+
+    // Intent đăng ký employer, chỉ có nghĩa khi user chưa active.
+    // Được set lúc register, đọc & clear khi verify OTP thành công.
+    // sau khi được verify thì sẽ được xóa
+    @Enumerated(EnumType.STRING)
+    @Column(name = "pending_account_type", length = 20)
+    private AccountType pendingAccountType;
+
+    @Column(name = "pending_company_name", length = 255)
+    private String pendingCompanyName;
 
     @ManyToMany(fetch = FetchType.LAZY)
     @JoinTable(

@@ -1,6 +1,6 @@
 package com.example.boilerplate.infrastructure.security.oauth2;
 
-import com.example.boilerplate.infrastructure.redis.RedisService;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit;
 @RequiredArgsConstructor
 public class OidcLoginSuccessHandler implements AuthenticationSuccessHandler {
 
-    private final RedisService redisService;
+    private final StringRedisTemplate stringRedisTemplate;
 
     @Value("${app.oauth2.redirect-url:http://localhost:5173/oauth-callback}")
     private String frontendRedirectUrl;
@@ -39,7 +39,8 @@ public class OidcLoginSuccessHandler implements AuthenticationSuccessHandler {
 
         // STEP 3: Lưu ticket vào Redis (TTL 60s, single-use, xóa sau khi đọc)
         //   Format: "oauth2:ticket:<uuid>" → userId
-        redisService.set(
+        //   Dùng StringRedisTemplate để lưu plain text, tránh JSON wrapper
+        stringRedisTemplate.opsForValue().set(
                 "oauth2:ticket:" + ticket,
                 userId.toString(),
                 60,

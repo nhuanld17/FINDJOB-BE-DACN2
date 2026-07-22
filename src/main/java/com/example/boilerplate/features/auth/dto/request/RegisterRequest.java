@@ -1,5 +1,6 @@
 package com.example.boilerplate.features.auth.dto.request;
 
+import com.example.boilerplate.common.constant.AccountType;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
@@ -28,6 +29,11 @@ public record RegisterRequest(
 
         @NotBlank(message = "BLANK_FIELD")
         @Size(max = 100, message = "OUT_OF_SIZE")
-        String fullName
+        String fullName,
+
+        AccountType accountType,                  // null → coi như USER
+
+        @Size(max = 255, message = "OUT_OF_SIZE")
+        String companyName                        // chỉ bắt buộc khi EMPLOYER (check service)
 ) {
 }

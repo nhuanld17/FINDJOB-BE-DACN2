@@ -1,9 +1,11 @@
 package com.example.boilerplate.infrastructure.security.oauth2;
 
+import com.example.boilerplate.common.constant.AccountType;
 import com.example.boilerplate.common.constant.AuthProvider;
 import com.example.boilerplate.common.constant.RoleEnum;
 import com.example.boilerplate.common.exception.AccountBannedException;
 import com.example.boilerplate.features.auth.service.OtpService;
+import com.example.boilerplate.features.company.service.CompanyService;
 import com.example.boilerplate.features.user.entity.Role;
 import com.example.boilerplate.features.user.entity.User;
 import com.example.boilerplate.features.user.repository.RoleRepository;
@@ -33,6 +35,7 @@ public class CustomOidcUserService extends OidcUserService {
     private final RoleRepository roleRepository;
     private final OtpService otpService;
     private final PasswordEncoder passwordEncoder;
+    private final CompanyService companyService;
 
     @Override
     public OidcUser loadUser(OidcUserRequest userRequest) throws OAuth2AuthenticationException {
@@ -77,11 +80,9 @@ public class CustomOidcUserService extends OidcUserService {
             // ===== USER MỚI: Tạo tài khoản mới =====
             user = new User();
             user.setEmail(email);
-            user.setUsername(email);
+            user.setUsername(generateUniqueUsername(email));
             user.setFullName(name);
             user.setAvatarUrl(picture);
-            // 🔴 CRITICAL FIX: DB có NOT NULL constraint cho password
-            // → Không thể setPassword(null) hay ""
             // → Hash UUID ngẫu nhiên: không ai login password được, an toàn
             user.setPassword(passwordEncoder.encode(UUID.randomUUID().toString()));
             user.setActive(true);                  // Google đã verify → auto active
@@ -121,9 +122,35 @@ public class CustomOidcUserService extends OidcUserService {
             if (!user.isActive()) {
                 user.setActive(true);
                 mutated = true;
+
+                // Xử lý intent đăng ký còn treo — giống verifyOtp
+                AccountType pending = user.getPendingAccountType() != null
+                        ? user.getPendingAccountType() : AccountType.USER;
+                RoleEnum targetRole = (pending == AccountType.EMPLOYER)
+                        ? RoleEnum.COMPANY : RoleEnum.USER;
+
+                boolean hasTargetRole = user.getRoles().stream()
+                        .anyMatch(r -> r.getName() == targetRole);
+                if (!hasTargetRole) {
+                    Role role = roleRepository.findByName(targetRole)
+                            .orElseThrow(() -> new OAuth2AuthenticationException(
+                                    new OAuth2Error("internal_error", "Role not found", null)));
+                    user.getRoles().add(role);
+                }
+
+                String pendingCompanyName = user.getPendingCompanyName();
+                user.setPendingAccountType(null);
+                user.setPendingCompanyName(null);
+
+                if (pending == AccountType.EMPLOYER) {
+                    String companyName = (pendingCompanyName != null && !pendingCompanyName.isBlank())
+                            ? pendingCompanyName : user.getUsername();
+                    companyService.createCompanyForOwner(user, companyName);
+                }
+
                 // Dọn Redis state OTP — tránh sót key otp:*, pending:* tới hết TTL
                 otpService.clearAll(user.getId());
-                log.info("Activated inactive user via OIDC + cleared OTP state: email={}", email);
+                log.info("Activated inactive user via OIDC + processed pending intent: email={}, role={}", email, targetRole);
             }
 
             // STEP 7: Link Google — KHÔNG ghi đè authProvider (giữ LOCAL)
@@ -156,6 +183,26 @@ public class CustomOidcUserService extends OidcUserService {
                 user.getId(),
                 user.getEmail()
         );
+    }
+
+    // java
+    /**
+     * Tạo username từ email, nếu bị trùng thì thêm số đuôi.
+     * VD: john.doe@gmail.com → "john.doe"
+     *     john.doe@outlook.com → "john.doe1" (nếu "john.doe" đã có)
+     */
+    private String generateUniqueUsername(String email) {
+        String base = email.split("@")[0];
+        // Thay dấu chấm bằng gạch dưới cho đẹp hơn (tuỳ chọn)
+        base = base.replaceAll("[^a-zA-Z0-9_]", "_");
+
+        String username = base;
+        int suffix = 1;
+        while (userRepository.findByUsername(username).isPresent()) {
+            username = base + suffix;
+            suffix++;
+        }
+        return username;
     }
 
 }

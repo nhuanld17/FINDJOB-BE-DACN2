@@ -43,6 +43,34 @@ public enum ErrorCode {
     RESEND_OTP_BLOCKED(2009,"Resend OTP blocked" ,HttpStatus.CONFLICT ),
     TOKEN_REVOKED(2010, "Token has been revoked", HttpStatus.UNAUTHORIZED),
 
+    // ===== Company =====
+    COMPANY_NOT_FOUND(2011, "Company not found", HttpStatus.NOT_FOUND),
+    COMPANY_ALREADY_EXISTS(2012, "User already has a company", HttpStatus.CONFLICT),
+    COMPANY_NAME_REQUIRED(2013, "Company name is required for employer registration", HttpStatus.BAD_REQUEST),
+
+    // ===== Employee =====
+    EMPLOYEE_NOT_FOUND(2014, "Employee profile not found", HttpStatus.NOT_FOUND),
+    EMPLOYEE_ALREADY_EXISTS(2015, "User already has an employee profile", HttpStatus.CONFLICT),
+    EMPLOYEE_PROFILE_INCOMPLETE(2016, "Employee profile is incomplete", HttpStatus.BAD_REQUEST),
+
+    // ===== Job =====
+    JOB_NOT_FOUND(2017, "Job not found", HttpStatus.NOT_FOUND),
+    JOB_ALREADY_CLOSED(2018, "Job is already closed", HttpStatus.BAD_REQUEST),
+    JOB_EXPIRED(2019, "Job has expired", HttpStatus.BAD_REQUEST),
+    JOB_SLUG_DUPLICATE(2020, "Job slug already exists in this company", HttpStatus.CONFLICT),
+
+    // ===== Application =====
+    APPLICATION_NOT_FOUND(2021, "Application not found", HttpStatus.NOT_FOUND),
+    APPLICATION_ALREADY_EXISTS(2022, "You have already applied to this job", HttpStatus.CONFLICT),
+    APPLICATION_NOT_OWNER(2023, "This application does not belong to you", HttpStatus.FORBIDDEN),
+
+    // ===== Category =====
+    CATEGORY_NOT_FOUND(2024, "Category not found", HttpStatus.NOT_FOUND),
+    CATEGORY_ALREADY_EXISTS(2025, "Category already exists", HttpStatus.CONFLICT),
+
+    // ===== Notification =====
+    NOTIFICATION_NOT_FOUND(2026, "Notification not found", HttpStatus.NOT_FOUND),
+
     // ===== System =====
     INTERNAL_ERROR(9999, "Internal server error", HttpStatus.INTERNAL_SERVER_ERROR);
 

@@ -5,21 +5,23 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.4.2</version>
+        <version>3.5.10</version>
         <relativePath/>
     </parent>
 
     <groupId>com.example</groupId>
-    <artifactId>boilerplate</artifactId>
+    <artifactId>FINDJOB-BE</artifactId>
     <version>0.0.1-SNAPSHOT</version>
-    <name>boilerplate</name>
-    <description>Spring Boot Boilerplate</description>
+    <name>find-job-be</name>
+    <description>Spring Boot FIND JOB</description>
 
     <properties>
         <java.version>21</java.version>
         <jjwt.version>0.12.6</jjwt.version>
         <mapstruct.version>1.6.3</mapstruct.version>
         <springdoc.version>2.8.4</springdoc.version>
+        <postgresql.version>42.7.7</postgresql.version>
+        <nimbus.version>9.37.4</nimbus.version>
         <sonar.coverage.jacoco.xmlReportPaths>target/site/jacoco/jacoco.xml</sonar.coverage.jacoco.xmlReportPaths>
     </properties>
 
@@ -229,6 +231,14 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-oauth2-client</artifactId>
         </dependency>
+
+        <!--  Query DSL   -->
+        <dependency>
+            <groupId>com.querydsl</groupId>
+            <artifactId>querydsl-jpa</artifactId>
+            <version>5.1.0</version>
+            <classifier>jakarta</classifier>
+        </dependency>
     </dependencies>
 
     <build>
@@ -263,6 +273,22 @@
                             <groupId>org.mapstruct</groupId>
                             <artifactId>mapstruct-processor</artifactId>
                             <version>${mapstruct.version}</version>
+                        </path>
+                        <path>
+                            <groupId>com.querydsl</groupId>
+                            <artifactId>querydsl-apt</artifactId>
+                            <version>5.1.0</version>
+                            <classifier>jakarta</classifier>
+                        </path>
+                        <path>
+                            <groupId>jakarta.persistence</groupId>
+                            <artifactId>jakarta.persistence-api</artifactId>
+                            <version>3.2.0</version>
+                        </path>
+                        <path>
+                            <groupId>jakarta.annotation</groupId>
+                            <artifactId>jakarta.annotation-api</artifactId>
+                            <version>2.1.1</version>
                         </path>
                     </annotationProcessorPaths>
                 </configuration>
