@@ -1,0 +1,13 @@
+### Đăng xuất (web - cookie)
+POST http://localhost:8080/api/v1/auth/logout
+Authorization: Bearer your-access-token
+Cookie: refreshToken=your-refresh-token-here
+
+### Đăng xuất (mobile - body)
+POST http://localhost:8080/api/v1/auth/logout
+Content-Type: application/json
+Authorization: Bearer your-access-token
+
+{
+  "refreshToken": "eyJhbGciOiJIUzUxMiJ9..."
+}

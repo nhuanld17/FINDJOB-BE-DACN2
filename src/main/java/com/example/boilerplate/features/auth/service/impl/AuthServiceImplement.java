@@ -1,9 +1,6 @@
 package com.example.boilerplate.features.auth.service.impl;
 
-import com.example.boilerplate.common.constant.AccountType;
-import com.example.boilerplate.common.constant.ErrorCode;
-import com.example.boilerplate.common.constant.RoleEnum;
-import com.example.boilerplate.common.constant.SuccessCode;
+import com.example.boilerplate.common.constant.*;
 import com.example.boilerplate.common.exception.AppException;
 import com.example.boilerplate.common.util.RequestUtils;
 import com.example.boilerplate.features.auth.dto.request.LoginRequest;
@@ -14,6 +11,9 @@ import com.example.boilerplate.features.auth.service.AuthService;
 import com.example.boilerplate.features.auth.service.OtpService;
 import com.example.boilerplate.features.auth.service.TokenBlacklistService;
 import com.example.boilerplate.features.company.service.CompanyService;
+import com.example.boilerplate.features.employee.entity.Employee;
+import com.example.boilerplate.features.employee.repository.EmployeeRepository;
+import com.example.boilerplate.features.user.entity.Role;
 import com.example.boilerplate.features.user.entity.User;
 import com.example.boilerplate.features.user.repository.RoleRepository;
 import com.example.boilerplate.features.user.repository.UserRepository;
@@ -24,7 +24,8 @@ import com.example.boilerplate.infrastructure.security.oauth2.JwtUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.redis.core.RedisTemplate;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.ResponseCookie;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -37,12 +38,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.List;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class AuthServiceImplement implements AuthService {
 
     private static final long PENDING_TTL_MINUTES = 10L;
@@ -58,9 +62,12 @@ public class AuthServiceImplement implements AuthService {
     private final JwtUtil jwtUtil;
     private final TokenBlacklistService tokenBlacklistService;
     private final RequestUtils requestUtils;
-    private final RedisTemplate<String, Object> redisTemplate;
     private final StringRedisTemplate stringRedisTemplate;
     private final CompanyService companyService;
+    private final EmployeeRepository employeeRepository;
+
+    @Value("${spring.security.oauth2.client.registration.google.client-id}")
+    private String googleClientId;
 
     @Override
     @Transactional
@@ -178,6 +185,7 @@ public class AuthServiceImplement implements AuthService {
                             .otpExpiresIn(Math.max(0, otpTtl))
                             .cooldownRemaining(Math.max(0, cooldownTtl))
                             .wrongRemaining(Math.max(0, OtpServiceImpl.MAX_WRONG - wrong))
+                            .pendingToken(token)
                             .build();
                 } else {
                     // attempts >= 5 + otp còn hạn
@@ -192,6 +200,7 @@ public class AuthServiceImplement implements AuthService {
                             .message(SuccessCode.OTP_ATTEMPTS_LIMIT_REACHED_AND_WRONG_NOT_REACHED.getMessage())
                             .otpExpiresIn(Math.max(0, otpTtl))
                             .wrongRemaining(Math.max(0, OtpServiceImpl.MAX_WRONG - wrong))
+                            .pendingToken(token)
                             .build();
                 }
             }
@@ -237,15 +246,14 @@ public class AuthServiceImplement implements AuthService {
             if (cooldownTtl > 0) {
                 // REUSE · 1003
                 String token = resolveOrCreatePendingToken(userId, pendingToken);
-                writePendingCookie(response, token);
-
-                return RegisterResponse.builder()
-                        .code(SuccessCode.OTP_ATTEMPTS_LIMIT_NOT_REACHED_COOLDOWN_ACTIVE.getCode())
-                        .message(SuccessCode.OTP_ATTEMPTS_LIMIT_NOT_REACHED_COOLDOWN_ACTIVE.getMessage())
-                        .otpExpiresIn(Math.max(0, otpTtl))
-                        .cooldownRemaining(Math.max(0, cooldownTtl))
-                        .wrongRemaining(Math.max(0, OtpServiceImpl.MAX_WRONG - wrong))
-                        .build();
+                writePendingCookie(response, token);                    return RegisterResponse.builder()
+                            .code(SuccessCode.OTP_ATTEMPTS_LIMIT_NOT_REACHED_COOLDOWN_ACTIVE.getCode())
+                            .message(SuccessCode.OTP_ATTEMPTS_LIMIT_NOT_REACHED_COOLDOWN_ACTIVE.getMessage())
+                            .otpExpiresIn(Math.max(0, otpTtl))
+                            .cooldownRemaining(Math.max(0, cooldownTtl))
+                            .wrongRemaining(Math.max(0, OtpServiceImpl.MAX_WRONG - wrong))
+                            .pendingToken(token)
+                            .build();
             } else {
                 // attempt < 5, otp còn hạn
                 // REUSE · 1005
@@ -259,6 +267,7 @@ public class AuthServiceImplement implements AuthService {
                         .message(SuccessCode.OTP_ATTEMPTS_LIMIT_NOT_REACHED_OTP_NOT_EXPIRED.getMessage())
                         .otpExpiresIn(Math.max(0, otpTtl))
                         .wrongRemaining(Math.max(0, OtpServiceImpl.MAX_WRONG - wrong))
+                        .pendingToken(token)
                         .build();
             }
         }
@@ -281,6 +290,7 @@ public class AuthServiceImplement implements AuthService {
                 .otpExpiresIn(OtpServiceImpl.OTP_TTL_SECONDS)
                 .cooldownRemaining(OtpServiceImpl.COOLDOWN_SECONDS)
                 .wrongRemaining(OtpServiceImpl.MAX_WRONG)
+                .pendingToken(token)
                 .build();
     }
 
@@ -316,7 +326,7 @@ public class AuthServiceImplement implements AuthService {
 
         // ======== Snapshot state một lần để tránh race condition ========
         int attempts = otpService.getAttempts(uid);
-        int wrongCount = otpService.getWrong(uid);
+        int wrongCount = otpService.getWrong(uid);  //////// ==============================
         String currentOtp = otpService.getOtp(uid);
         long otpTtl = otpService.getOtpTtl(uid);
         Long attemptsTTL = otpService.getAttemptsTtl(uid);
@@ -380,26 +390,27 @@ public class AuthServiceImplement implements AuthService {
             }
         }
 
-        // ======== SO KHỚP otp ========
-        String otp = currentOtp; // dùng lại snapshot
+        // ======== SO KHỚP otp (atomic wrong check) ========
+        // Tư tưởng: wrong counter là "số vé được phép thử OTP".
+        // Mỗi request muốn thử OTP phải lấy 1 vé trước (atomic INCR).
+        // Nếu hết vé → block. Nếu OTP đúng → trả lại toàn bộ vé (resetWrong).
 
-        // Nếu OTP hết hạn, trường hợp này
-        // Đây là deadcode, vì trường hợp hết hạn đã được xử lí ở trên, 
-        // nhưng vẫn giữ lại để phòng hờ
-        if (otp == null || otp.isBlank()) {
+        // Bước 1: INCR wrong atomic — lấy vé (lỡ sai thì vé cũng mất)
+        long wrongAfterIncrement = otpService.incrementAndGetWrong(uid);
+
+        // Bước 2: Hết vé thì block
+        if (wrongAfterIncrement > OtpServiceImpl.MAX_WRONG) {
             return VerifyOtpResponse.builder()
-                .code(SuccessCode.OTP_ATTEMPTS_LIMIT_NOT_REACHED_AND_OTP_EXPIRED.getCode())
-                .message(SuccessCode.OTP_ATTEMPTS_LIMIT_NOT_REACHED_AND_OTP_EXPIRED.getMessage())
-                .otpExpiresIn(0L)
-                .wrongRemaining(Math.max(0, OtpServiceImpl.MAX_WRONG - wrongCount))
-                .build();
+                    .code(SuccessCode.OTP_ATTEMPTS_LIMIT_NOT_REACHED_AND_WRONG_LIMIT_REACHED.getCode())
+                    .message(SuccessCode.OTP_ATTEMPTS_LIMIT_NOT_REACHED_AND_WRONG_LIMIT_REACHED.getMessage())
+                    .wrongRemaining(0)
+                    .build();
         }
 
-        // Nếu otp từ request không đúng thì tăng wrong counter
-        // và trả lỗi OTP invalid
-        if (!otp.equals(request.otp().trim())) {
-            otpService.incrementWrong(uid);
-            int remaining = Math.max(0, OtpServiceImpl.MAX_WRONG - otpService.getWrong(uid));
+        // Bước 3: Có vé → check OTP
+        if (!currentOtp.equals(request.otp().trim())) {
+            // Sai → vé đã dùng, trả số vé còn lại
+            int remaining = Math.max(0, OtpServiceImpl.MAX_WRONG - (int) wrongAfterIncrement);
 
             return VerifyOtpResponse.builder()
                     .code(SuccessCode.OTP_NOT_MATCH.getCode())
@@ -408,6 +419,9 @@ public class AuthServiceImplement implements AuthService {
                     .wrongRemaining(remaining)
                     .build();
         }
+
+        // Bước 4: OTP đúng → trả lại vé (reset wrong về 0)
+        otpService.resetWrong(uid);
 
         // Nếu otp đúng thì đổi trạng thái của user sang activate = true
         User user = userRepository.findByIdWithRoles(uid).orElseThrow(
@@ -443,6 +457,13 @@ public class AuthServiceImplement implements AuthService {
                     !pendingCompanyName.isBlank())
                     ? pendingCompanyName : user.getUsername(); // phòng hờ intent thiếu tên
             companyService.createCompanyForOwner(user, companyName);
+        } else {
+            // USER: tự tạo Employee profile để có thể follow company, apply job, ...
+            if (employeeRepository.findByUser(user).isEmpty()) {
+                Employee employee = new Employee();
+                employee.setUser(user);
+                employeeRepository.save(employee);
+            }
         }
 
         // Dọn state otp sau khi verify thành công
@@ -588,6 +609,7 @@ public class AuthServiceImplement implements AuthService {
         return ResendOtpResponse.builder()
                 .code(SuccessCode.RESEND_OTP_SUCCESS.getCode())
                 .message(SuccessCode.RESEND_OTP_SUCCESS.getMessage())
+                .pendingToken(newPendingToken)
                 .build();
     }
 
@@ -760,7 +782,8 @@ public class AuthServiceImplement implements AuthService {
                 user.getId(),
                 user.getUsername(),
                 user.getRoles(),
-                newAccessToken
+                newAccessToken,
+                newRefreshToken
         );
     }
 
@@ -842,6 +865,65 @@ public class AuthServiceImplement implements AuthService {
     }
 
     @Override
+    @Transactional
+    public void changePassword(CustomUserDetails userDetails, String oldPassword, String newPassword, HttpServletRequest request) {
+        // Kiểm tra mật khẩu cũ có đúng không — dùng password hash có sẵn từ SecurityContext
+        if (!passwordEncoder.matches(oldPassword, userDetails.getPassword())) {
+            throw new AppException(ErrorCode.INVALID_CREDENTIALS);
+        }
+
+        // Cập nhật mật khẩu mới bằng JPQL update — ko load entity
+        userRepository.updatePassword(userDetails.getId(), passwordEncoder.encode(newPassword));
+
+        // Force logout tất cả thiết bị khác (trừ thiết bị hiện tại)
+        forceLogoutOtherDevices(userDetails.getId(), request);
+
+        log.info("Password changed for user {}", userDetails.getId());
+    }
+
+    /**
+     * Thu hồi tất cả session của thiết bị khác (trừ thiết bị đang thực hiện request).
+     * Access token stateless JWT vẫn sống đến khi hết hạn, nhưng refresh token
+     * bị blacklist ngay → không thể refresh → buộc đăng nhập lại.
+     */
+    private void forceLogoutOtherDevices(Long userId, HttpServletRequest request) {
+        // Cố gắng lấy current sessionId — nếu lỗi thì revoke ALL sessions (fail-closed)
+        String currentSessionId = null;
+        try {
+            String authorizationHeader = request.getHeader("Authorization");
+            if (authorizationHeader != null && authorizationHeader.startsWith("Bearer ")) {
+                currentSessionId = jwtUtil.extractSessionId(authorizationHeader.substring(7));
+            }
+        } catch (Exception e) {
+            log.warn("Cannot extract current sessionId, will revoke all sessions", e);
+        }
+
+        // Lấy tất cả session của user
+        Set<Object> allSessions = redisService.getUserSessions(userId.toString());
+        if (allSessions == null || allSessions.isEmpty()) return;
+
+        for (Object sessionIdObj : allSessions) {
+            String sessionId = sessionIdObj.toString();
+            if (sessionId.equals(currentSessionId)) continue; // bỏ qua thiết bị hiện tại
+
+            // Blacklist refresh token của session này
+            Object refreshJti = redisService.getSessionField(sessionId, "refreshJtiCurrent");
+            if (refreshJti != null) {
+                long sessionTtl = redisService.getTtl(RedisService.SESSION_KEY_PREFIX + sessionId);
+                if (sessionTtl > 0) {
+                    tokenBlacklistService.revokeRefreshToken(refreshJti.toString(), sessionTtl);
+                }
+            }
+
+            // Xoá session khỏi Redis
+            redisService.deleteSession(sessionId);
+            redisService.removeSessionFromUser(userId.toString(), sessionId);
+
+            log.info("Revoked session {} of user {} after password change", sessionId, userId);
+        }
+    }
+
+    @Override
     public AuthResponse createUserSession(Long userId,
                                           String deviceId,
                                           String deviceName,
@@ -890,13 +972,152 @@ public class AuthServiceImplement implements AuthService {
                 7 * 24 * 60 * 60L
         );
 
-        // 8. Trả về thông tin của user (jti, username, roles, access token)
+        // 8. Trả về thông tin của user (id, username, roles, accessToken, refreshToken)
+        //    Web dùng cookie HttpOnly, mobile dùng refreshToken trong body để lưu Keychain
         return new AuthResponse(
                 SuccessCode.LOGIN_SUCCESS.getCode(),
                 userDetails.getId(),
                 userDetails.getUsername(),
                 userDetails.getRoles(),
-                accessToken
+                accessToken,
+                refreshToken
+        );
+    }
+
+    @Override
+    @Deprecated
+    public AuthResponse googleLogin(String googleAccessToken,
+                                    String clientIp,
+                                    String userAgent,
+                                    HttpServletResponse httpServletResponse) {
+        // 1. Verify Google accessToken bằng Google Token Info API
+        var restTemplate = new org.springframework.web.client.RestTemplate();
+        Map<String, Object> tokenInfo;
+
+        try {
+            String url = "https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=" + googleAccessToken;
+            tokenInfo = restTemplate.getForObject(url, Map.class);
+        } catch (Exception e) {
+            throw new AppException(ErrorCode.UNAUTHORIZED);
+        }
+
+        if (tokenInfo == null || tokenInfo.get("email") == null) {
+            throw new AppException(ErrorCode.UNAUTHORIZED);
+        }
+
+        // 2. Check aud/azp — chống token substitution attack
+        //    aud = client_id của ứng dụng Google OAuth 2.0; azp = authorized party.
+        //    Nếu cả 2 đều không khớp GOOGLE_CLIENT_ID → token từ app khác → từ chối.
+        Object audObj = tokenInfo.get("aud");
+        Object azpObj = tokenInfo.get("azp");
+        String aud = audObj != null ? audObj.toString() : null;
+        String azp = azpObj != null ? azpObj.toString() : null;
+
+        // Google tokeninfo v3 trả aud = client_id của ứng dụng sở hữu token.
+        // azp cũng là client_id (authorized party). Ít nhất 1 trong 2 phải khớp.
+        boolean audMatch = googleClientId.equals(aud);
+        boolean azpMatch = googleClientId.equals(azp);
+        if (!audMatch && !azpMatch) {
+            log.warn("Google token aud/azp mismatch: aud={}, azp={}, expected={}", aud, azp, googleClientId);
+            throw new AppException(ErrorCode.UNAUTHORIZED);
+        }
+
+        // 3. Check email_verified — tokeninfo v3 trả String "true", KHÔNG phải boolean true!
+        Object emailVerified = tokenInfo.get("email_verified");
+        boolean isEmailVerified = "true".equals(String.valueOf(emailVerified));
+        if (!isEmailVerified) {
+            throw new AppException(ErrorCode.UNAUTHORIZED);
+        }
+
+        // 4. Lấy thông tin từ Google
+        String email = ((String) tokenInfo.get("email")).toLowerCase().trim();
+        String name = (String) tokenInfo.get("name");
+        String sub = (String) tokenInfo.get("sub");
+        String picture = (String) tokenInfo.get("picture");
+
+        // 5. Tìm user theo email — nếu chưa có thì tạo mới
+        User user = userRepository.findByEmailWithRoles(email).orElse(null);
+
+        if (user == null) {
+            // ===== USER MỚI =====
+            user = new User();
+            user.setEmail(email);
+            user.setUsername(generateUniqueUsername(email));
+            user.setFullName(name);
+            user.setAvatarUrl(picture);
+            user.setPassword(passwordEncoder.encode(UUID.randomUUID().toString()));
+            user.setActive(true);
+            user.setDeleted(false);
+            user.setAuthProvider(AuthProvider.GOOGLE);
+            user.setSocialId(sub);
+            user.setRoles(new HashSet<>());
+
+            Role userRole = roleRepository.findByName(RoleEnum.USER)
+                    .orElseThrow(() -> new AppException(ErrorCode.INTERNAL_ERROR));
+            user.getRoles().add(userRole);
+
+            userRepository.save(user);
+
+            // Tạo Employee profile cho user mới để có thể follow/apply
+            Employee employee = new Employee();
+            employee.setUser(user);
+            employeeRepository.save(employee);
+        } else {
+            // ===== USER ĐÃ TỒN TẠI =====
+            if (user.isDeleted()) {
+                throw new AppException(ErrorCode.ACCOUNT_BANNED);
+            }
+
+            // Auto-activate nếu inactive
+            if (!user.isActive()) {
+                user.setActive(true);
+
+                AccountType pending = user.getPendingAccountType() != null
+                        ? user.getPendingAccountType() : AccountType.USER;
+                RoleEnum targetRole = (pending == AccountType.EMPLOYER)
+                        ? RoleEnum.COMPANY : RoleEnum.USER;
+
+                boolean hasTargetRole = user.getRoles().stream()
+                        .anyMatch(r -> r.getName() == targetRole);
+                if (!hasTargetRole) {
+                    Role role = roleRepository.findByName(targetRole)
+                            .orElseThrow(() -> new AppException(ErrorCode.INTERNAL_ERROR));
+                    user.getRoles().add(role);
+                }
+
+                String pendingCompanyName = user.getPendingCompanyName();
+                user.setPendingAccountType(null);
+                user.setPendingCompanyName(null);
+
+                if (pending == AccountType.EMPLOYER && pendingCompanyName != null && !pendingCompanyName.isBlank()) {
+                    companyService.createCompanyForOwner(user, pendingCompanyName);
+                }
+
+                otpService.clearAll(user.getId());
+            }
+
+            // Link Google account nếu chưa link
+            if (user.getSocialId() == null || user.getSocialId().isBlank()) {
+                user.setSocialId(sub);
+            }
+            if (user.getAvatarUrl() == null || user.getAvatarUrl().isBlank()) {
+                user.setAvatarUrl(picture);
+            }
+
+            userRepository.save(user);
+        }
+
+        // 5. Tạo session + JWT (dùng chung createUserSession)
+        String deviceId = UUID.randomUUID().toString();
+        String deviceName = "Google Login (Mobile)";
+
+        return createUserSession(
+                user.getId(),
+                deviceId,
+                deviceName,
+                clientIp,
+                userAgent,
+                httpServletResponse
         );
     }
 
@@ -907,20 +1128,12 @@ public class AuthServiceImplement implements AuthService {
                                        HttpServletResponse httpServletResponse) {
         String redisKey = TICKET_KEY_PREFIX + ticket;
 
-        // Fix #6: Atomic delete — lấy value và xóa trong 1 bước
-        //   Dùng Redis GETDEL (Redis ≥6.2) hoặc Lua script
-        //   → 2 request song song cùng ticket chỉ 1 trong 2 lấy được value
-        String userIdStr = stringRedisTemplate.execute(
-                new org.springframework.data.redis.core.script.DefaultRedisScript<>(
-                        "local v = redis.call('GET', KEYS[1]); " +
-                                "if v then redis.call('DEL', KEYS[1]) end; " +
-                                "return v;",
-                        String.class
-                ),
-                List.of(redisKey)
-        );
+        // Fix #6: Atomic GET+DELETE — opsForValue().getAndDelete() có sẵn từ Spring Data Redis 3.x,
+        //   → 2 request song song cùng ticket chỉ 1 trong 2 lấy được value.
+        String userIdStr = stringRedisTemplate.opsForValue().getAndDelete(redisKey);
 
-        if ( userIdStr == null || userIdStr.isBlank()) {
+        if (userIdStr == null || userIdStr.isBlank()) {
+            log.warn("Exchange ticket failed: key '{}' not found in Redis (expired/consumed/missing)", redisKey);
             throw new AppException(ErrorCode.UNAUTHORIZED);
         }
 
@@ -1034,6 +1247,7 @@ public class AuthServiceImplement implements AuthService {
                             .otpExpiresIn(Math.max(0, otpTtl))
                             .cooldownRemaining(Math.max(0, cooldownTtl))
                             .wrongRemaining(Math.max(0, OtpServiceImpl.MAX_WRONG - wrong))
+                            .pendingToken(token)
                             .build();
                 } else {
                     // attempts >= 5 + wrong < 5 + otp còn hạn + cooldown = 0
@@ -1047,6 +1261,7 @@ public class AuthServiceImplement implements AuthService {
                             .otpExpiresIn(Math.max(0, otpTtl))
                             .cooldownRemaining(0L)
                             .wrongRemaining(Math.max(0, OtpServiceImpl.MAX_WRONG - wrong))
+                            .pendingToken(token)
                             .build();
                 }
             }
@@ -1089,6 +1304,7 @@ public class AuthServiceImplement implements AuthService {
                         .otpExpiresIn(Math.max(0, otpTtl))
                         .cooldownRemaining(Math.max(0, cooldownTtl))
                         .wrongRemaining(Math.max(0, OtpServiceImpl.MAX_WRONG - wrong))
+                        .pendingToken(token)
                         .build();
             } else {
                 // attempts < 5 + wrong < 5 + otp còn hạn + cooldown = 0
@@ -1102,6 +1318,7 @@ public class AuthServiceImplement implements AuthService {
                         .otpExpiresIn(Math.max(0, otpTtl))
                         .cooldownRemaining(0L)
                         .wrongRemaining(Math.max(0, OtpServiceImpl.MAX_WRONG - wrong))
+                        .pendingToken(token)
                         .build();
             }
         }
@@ -1124,6 +1341,7 @@ public class AuthServiceImplement implements AuthService {
                 .otpExpiresIn(OtpServiceImpl.OTP_TTL_SECONDS)
                 .cooldownRemaining(OtpServiceImpl.COOLDOWN_SECONDS)
                 .wrongRemaining(OtpServiceImpl.MAX_WRONG)
+                .pendingToken(token)
                 .build();
     }
 
@@ -1147,12 +1365,30 @@ public class AuthServiceImplement implements AuthService {
     private void writePendingCookie(HttpServletResponse response, String token) {
         ResponseCookie pendingCookie = ResponseCookie.from("pendingToken", token)
                 .httpOnly(true)
-                .secure(false)
+                .secure(true)
+                .sameSite("Lax")
                 .path("/")
                 .maxAge(600)
                 .build();
 
         response.addHeader("Set-Cookie", pendingCookie.toString());
+    }
+
+    /**
+     * Tạo username từ email, nếu bị trùng thì thêm số đuôi.
+     * VD: john.doe@gmail.com → "john.doe"
+     */
+    private String generateUniqueUsername(String email) {
+        String base = email.split("@")[0];
+        base = base.replaceAll("[^a-zA-Z0-9_]", "_");
+
+        String username = base;
+        int suffix = 1;
+        while (userRepository.findByUsername(username).isPresent()) {
+            username = base + suffix;
+            suffix++;
+        }
+        return username;
     }
 
     private String resolveOrCreatePendingToken(Long id, String pendingToken) {
@@ -1195,7 +1431,8 @@ public class AuthServiceImplement implements AuthService {
         // Xóa cookie pendingToken phía client
         ResponseCookie expiredCookie = ResponseCookie.from("pendingToken", "")
                 .httpOnly(true)
-                .secure(false)
+                .secure(true)
+                .sameSite("Lax")
                 .path("/")
                 .maxAge(0)
                 .build();

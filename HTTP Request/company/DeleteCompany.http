@@ -1,0 +1,3 @@
+### Xoá company (soft delete)
+DELETE http://localhost:8080/api/v1/companies/1
+Authorization: Bearer your-access-token

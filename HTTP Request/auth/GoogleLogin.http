@@ -1,0 +1,7 @@
+### Google login (mobile - gửi accessToken từ expo-auth-session)
+POST http://localhost:8080/api/v1/auth/google-login
+Content-Type: application/json
+
+{
+  "googleAccessToken": "ya29.a0ARrdaM..."
+}

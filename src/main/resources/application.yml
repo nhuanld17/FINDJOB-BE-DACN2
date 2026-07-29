@@ -2,6 +2,11 @@ server:
   forward-headers-strategy: framework
 
 spring:
+  servlet:
+    multipart:
+      max-file-size: 10MB
+      max-request-size: 10MB
+
   application:
     name: boilerplate
 
@@ -12,8 +17,23 @@ spring:
     url: jdbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_NAME}?currentSchema=${DB_SCHEMA}
     username: ${DB_USERNAME}
     password: ${DB_PASSWORD}
-
     driver-class-name: org.postgresql.Driver
+
+    # ===== HikariCP Connection Pool =====
+    hikari:
+      pool-name: FindJobPool
+      # Tối đa 10 connections đồng thời (phù hợp với ứng dụng vừa)
+      maximum-pool-size: 10
+      # Luôn giữ 2 connections sẵn sàng để tránh latency
+      minimum-idle: 2
+      # 30 giây timeout nếu không lấy được connection khả dụng
+      connection-timeout: 30000
+      # Connection chết nếu idle quá 5 phút (giải phóng tài nguyên)
+      idle-timeout: 300000
+      # Connection tối đa sống 30 phút (tránh connection leak)
+      max-lifetime: 1800000
+      # Câu lệnh test connection trước khi dùng
+      connection-test-query: SELECT 1
 
   jpa:
     hibernate:
@@ -83,3 +103,11 @@ app:
   oauth2:
     # Fix #10: Default :5173 (Vite dev server) — khớp CorsConfig
     redirect-url: ${APP_OAUTH2_REDIRECT_URL:http://localhost:5173/oauth-callback}
+    # Danh sách scheme mobile được phép nhận redirect kèm ticket, phân cách bằng dấu phẩy.
+    # Production CHỈ có findjob://. exp:// là scheme của Expo Go — CHỈ bật khi dev.
+    allowed-mobile-schemes: ${APP_OAUTH2_ALLOWED_MOBILE_SCHEMES:findjob://}
+
+cloudinary:
+  cloud-name: ${CLOUDINARY_CLOUD_NAME}
+  api-key: ${CLOUDINARY_API_KEY}
+  api-secret: ${CLOUDINARY_API_SECRET}

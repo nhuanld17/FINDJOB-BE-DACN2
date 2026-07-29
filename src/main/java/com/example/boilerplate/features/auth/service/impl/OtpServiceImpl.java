@@ -250,6 +250,22 @@ public class OtpServiceImpl implements OtpService {
         return getWrong(userId) >= MAX_WRONG;
     }
 
+    /**
+     * Atomic INCR + trả về giá trị sau increment.
+     * Khác với incrementWrong(): incrementWrong() trả về current (có thể null),
+     * method này luôn trả vè giá trị thực tế sau khi tăng.
+     * Dùng trong verifyOtp để tránh race condition brute force
+     */
+    @Override
+    public long incrementAndGetWrong(Long userId) {
+        String key = "otp:wrong:" + userId;
+        Long current = redisTemplate.opsForValue().increment(key);
+        if (current != null && current == 1) {
+            redisTemplate.expire(key, OTP_TTL_SECONDS, TimeUnit.SECONDS);
+        }
+        return current != null ? current : 1L;
+    }
+
     // ───────────────────────── Clear ─────────────────────────────────────
 
     /**

@@ -1,0 +1,11 @@
+### Upload ảnh bìa company
+POST http://localhost:8080/api/v1/companies/1/cover
+Authorization: Bearer your-access-token
+Content-Type: multipart/form-data; boundary=----boundary
+
+------boundary
+Content-Disposition: form-data; name="file"; filename="cover.png"
+Content-Type: image/png
+
+< ./test-cover.png
+------boundary--

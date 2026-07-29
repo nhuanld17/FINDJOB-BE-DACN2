@@ -1,0 +1,43 @@
+### Đăng nhập (USER)
+POST http://localhost:8080/api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "testuser@example.com",
+  "password": "password123",
+  "deviceId": "550e8400-e29b-41d4-a716-446655440000",
+  "deviceName": "Chrome Windows"
+}
+
+### Đăng nhập (EMPLOYER)
+POST http://localhost:8080/api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "employer1@example.com",
+  "password": "password123",
+  "deviceId": "550e8400-e29b-41d4-a716-446655440001",
+  "deviceName": "Chrome Windows"
+}
+
+### Đăng nhập sai mật khẩu
+POST http://localhost:8080/api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "testuser@example.com",
+  "password": "wrongpassword",
+  "deviceId": "550e8400-e29b-41d4-a716-446655440002",
+  "deviceName": "Chrome Windows"
+}
+
+### Đăng nhập tài khoản chưa active (sẽ trả về LoginInactiveResponse + pendingToken)
+POST http://localhost:8080/api/v1/auth/login
+Content-Type: application/json
+
+{
+  "email": "testuser@example.com",
+  "password": "password123",
+  "deviceId": "550e8400-e29b-41d4-a716-446655440003",
+  "deviceName": "Chrome Windows"
+}

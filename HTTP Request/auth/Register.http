@@ -1,0 +1,26 @@
+### Đăng ký tài khoản USER
+POST http://localhost:8080/api/v1/auth/register
+Content-Type: application/json
+
+{
+  "username": "testuser",
+  "email": "testuser@example.com",
+  "password": "password123",
+  "confirmPassword": "password123",
+  "fullName": "Nguyễn Văn A",
+  "accountType": "USER"
+}
+
+### Đăng ký tài khoản EMPLOYER (cần companyName)
+POST http://localhost:8080/api/v1/auth/register
+Content-Type: application/json
+
+{
+  "username": "employer1",
+  "email": "employer1@example.com",
+  "password": "password123",
+  "confirmPassword": "password123",
+  "fullName": "Công ty TNHH ABC",
+  "accountType": "EMPLOYER",
+  "companyName": "ABC Technology Company"
+}

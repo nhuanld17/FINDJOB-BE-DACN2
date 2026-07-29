@@ -9,7 +9,8 @@ public record AuthResponse(
     Long id,
     String username,
     Set<Role> roles,
-    String accessToken
+    String accessToken,
+    String refreshToken   // MỚI: null với web (dùng cookie HttpOnly), có giá trị với mobile (lưu Keychain)
 ) implements LoginResult {
 }
 

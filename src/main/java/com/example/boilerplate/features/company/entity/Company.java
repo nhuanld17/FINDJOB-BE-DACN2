@@ -1,6 +1,7 @@
 package com.example.boilerplate.features.company.entity;
 
 import com.example.boilerplate.common.base.BaseEntity;
+import com.example.boilerplate.common.constant.City;
 import com.example.boilerplate.features.user.entity.User;
 import jakarta.persistence.*;
 import lombok.Getter;
@@ -46,8 +47,9 @@ public class Company extends BaseEntity {
     @Column(length = 100)
     private String industry;
 
-    @Column(nullable = true, length = 100)
-    private String city;
+    @Enumerated(EnumType.STRING)
+    @Column(length = 50)
+    private City city;
 
     @Column(length = 500)
     private String address;
@@ -66,4 +68,13 @@ public class Company extends BaseEntity {
 
     @Column(name = "contact_position", length = 255)
     private String contactPosition;
+
+    @Column(name = "follower_count", nullable = false)
+    private Integer followerCount = 0;
+
+    @Column(name = "average_rating", nullable = false)
+    private Double averageRating = 0.0;
+
+    @Column(name = "total_reviews", nullable = false)
+    private Integer totalReviews = 0;
 }

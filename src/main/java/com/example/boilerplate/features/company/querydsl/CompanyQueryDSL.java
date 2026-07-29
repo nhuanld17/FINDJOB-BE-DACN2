@@ -1,5 +1,6 @@
 package com.example.boilerplate.features.company.querydsl;
 
+import com.example.boilerplate.common.constant.City;
 import com.example.boilerplate.common.constant.JobStatus;
 import com.example.boilerplate.features.company.dto.response.CompanySummaryResponse;
 import com.example.boilerplate.features.company.entity.QCompany;
@@ -56,8 +57,8 @@ public class CompanyQueryDSL {
             predicate.and(company.industry.containsIgnoreCase(industry.trim()));
         }
 
-        if (StringUtils.hasText(city)) {
-            predicate.and(company.city.containsIgnoreCase(city.trim()));
+        if (city != null) {
+            predicate.and(company.city.eq(City.valueOf(city)));
         }
 
         // ===== Đếm tổng số bản ghi =====
@@ -99,7 +100,8 @@ public class CompanyQueryDSL {
                                 .select(job.count().stringValue())
                                 .from(job)
                                 .where(job.company.eq(company)
-                                        .and(job.status.eq(JobStatus.ACTIVE)))
+                                        .and(job.status.eq(JobStatus.ACTIVE))),
+                        company.followerCount
                 ))
                 .from(company)
                 .where(predicate)

@@ -25,6 +25,7 @@ public interface OtpService {
     void resetWrong(Long userId);
     int getWrong(Long userId);
     boolean isWrongBlocked(Long userId);
+    long incrementAndGetWrong(Long userId);
 
     // ───────────────────────── Clear ─────────────────────────────────────
     void clearAll(Long userId);

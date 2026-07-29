@@ -10,6 +10,8 @@ import java.util.List;
 @Repository
 public interface FollowedCompanyRepository extends JpaRepository<FollowedCompany, FollowedCompanyId> {
     List<FollowedCompany> findByEmployeeId(Long employeeId);
+
     boolean existsByEmployeeIdAndCompanyId(Long employeeId, Long companyId);
     void deleteByEmployeeIdAndCompanyId(Long employeeId, Long companyId);
+    long countByCompanyId(Long companyId);
 }

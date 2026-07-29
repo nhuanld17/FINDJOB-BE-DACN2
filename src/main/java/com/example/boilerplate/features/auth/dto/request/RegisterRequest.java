@@ -21,7 +21,7 @@ public record RegisterRequest(
         String email,
 
         @NotBlank(message = "BLANK_FIELD")
-        @Size(min = 8, message = "INVALID_PASSWORD")
+        @Size(min = 8, max = 72, message = "INVALID_PASSWORD")
         String password,
 
         @NotBlank(message = "BLANK_FIELD")

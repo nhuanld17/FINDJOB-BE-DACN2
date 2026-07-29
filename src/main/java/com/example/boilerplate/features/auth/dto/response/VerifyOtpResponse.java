@@ -9,6 +9,7 @@ public record VerifyOtpResponse(
         Long otpExpiresIn,       // Số giây còn lại cho đến khi otp hết hạn
         Long cooldownRemaining,  // Số giây còn lại để block user không resend otp
         Integer wrongRemaining,   // Số lượt nhập mã OTP còn lại để xác minh
-        Long attemptsTTL       // thời gian sống còn lại của otp:attempts:userId
+        Long attemptsTTL,        // thời gian sống còn lại của otp:attempts:userId
+        String pendingToken      // MỚI: null với web (dùng cookie), mobile xác thực OTP session
 ) {
 }

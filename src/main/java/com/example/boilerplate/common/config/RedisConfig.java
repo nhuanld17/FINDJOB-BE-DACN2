@@ -5,7 +5,9 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
+import org.springframework.data.redis.serializer.JdkSerializationRedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
+import org.springframework.security.oauth2.core.endpoint.OAuth2AuthorizationRequest;
 
 @Configuration
 public class RedisConfig {
@@ -36,6 +38,38 @@ public class RedisConfig {
         template.setHashValueSerializer(jsonSerializer);
 
         // Bắt buộc gọi sau khi set serializer để khởi tạo template
+        template.afterPropertiesSet();
+
+        return template;
+    }
+
+    /**
+     * RedisTemplate riêng cho OAuth2 Authorization Request.
+     *
+     * <p>Dùng {@link JdkSerializationRedisSerializer} thay vì Jackson JSON vì
+     * {@link OAuth2AuthorizationRequest} chứa các class như
+     * {@code OAuth2AuthorizationResponseType} mà Jackson không thể
+     * deserialize được (thiếu default constructor / Jackson annotation).
+     *
+     * <p>Vì {@code OAuth2AuthorizationRequest} implement {@link java.io.Serializable},
+     * JDK serialization hoạt động ổn định và an toàn cho dữ liệu tạm thời (TTL 120s).
+     *
+     * <p>Dùng trong {@code RedisOAuth2AuthorizationRequestRepository}.
+     */
+    @Bean
+    public RedisTemplate<String, OAuth2AuthorizationRequest> oauth2StateRedisTemplate(
+            RedisConnectionFactory factory) {
+        RedisTemplate<String, OAuth2AuthorizationRequest> template = new RedisTemplate<>();
+        template.setConnectionFactory(factory);
+
+        StringRedisSerializer stringSerializer = new StringRedisSerializer();
+        JdkSerializationRedisSerializer jdkSerializer = new JdkSerializationRedisSerializer();
+
+        template.setKeySerializer(stringSerializer);
+        template.setValueSerializer(jdkSerializer);
+        template.setHashKeySerializer(stringSerializer);
+        template.setHashValueSerializer(jdkSerializer);
+
         template.afterPropertiesSet();
 
         return template;

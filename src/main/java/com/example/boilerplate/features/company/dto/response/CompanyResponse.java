@@ -1,5 +1,6 @@
 package com.example.boilerplate.features.company.dto.response;
 
+import com.example.boilerplate.common.constant.City;
 import lombok.Builder;
 
 import java.time.Instant;
@@ -17,13 +18,14 @@ public record CompanyResponse(
         String website,
         String companySize,
         String industry,
-        String city,
+        City city,
         String address,
         String email,
         String phone,
         String facebookUrl,
         String linkedinUrl,
         String contactPosition,
+        int followerCount,
         Instant createdAt,
         Instant updatedAt
 ) {

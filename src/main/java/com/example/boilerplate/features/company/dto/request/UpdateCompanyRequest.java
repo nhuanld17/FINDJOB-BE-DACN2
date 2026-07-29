@@ -1,5 +1,6 @@
 package com.example.boilerplate.features.company.dto.request;
 
+import com.example.boilerplate.common.constant.City;
 import jakarta.validation.constraints.Size;
 
 public record UpdateCompanyRequest(
@@ -25,8 +26,7 @@ public record UpdateCompanyRequest(
         @Size(max = 100, message = "OUT_OF_SIZE")
         String industry,
 
-        @Size(max = 100, message = "OUT_OF_SIZE")
-        String city,
+        City city,
 
         @Size(max = 500, message = "OUT_OF_SIZE")
         String address,

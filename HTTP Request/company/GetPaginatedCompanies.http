@@ -1,0 +1,14 @@
+### Lấy danh sách company (phân trang, không auth)
+GET http://localhost:8080/api/v1/companies?page=0&size=10&sort=createdAt,desc
+
+### Tìm kiếm company theo tên
+GET http://localhost:8080/api/v1/companies?search=ABC&page=0&size=10
+
+### Lọc company theo ngành
+GET http://localhost:8080/api/v1/companies?industry=C%C3%B4ng%20ngh%E1%BB%87&page=0&size=10
+
+### Lọc company theo thành phố
+GET http://localhost:8080/api/v1/companies?city=H%E1%BB%93%20Ch%C3%AD%20Minh&page=0&size=10
+
+### Tìm kiếm + lọc theo ngành + thành phố
+GET http://localhost:8080/api/v1/companies?search=ABC&industry=C%C3%B4ng%20ngh%E1%BB%87&city=H%C3%A0%20N%E1%BB%99i&page=0&size=20&sort=name,asc

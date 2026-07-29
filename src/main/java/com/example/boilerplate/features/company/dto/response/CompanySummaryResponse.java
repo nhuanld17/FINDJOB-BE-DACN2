@@ -1,5 +1,6 @@
 package com.example.boilerplate.features.company.dto.response;
 
+import com.example.boilerplate.common.constant.City;
 import lombok.Builder;
 
 @Builder
@@ -11,9 +12,10 @@ public record CompanySummaryResponse (
         String coverUrl,
         String industry,
         String companySize,
-        String city,
+        City city,
         String website,
-        String jobCount
+        String jobCount,
+        int followerCount
 ) {
 
 

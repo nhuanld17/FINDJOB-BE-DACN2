@@ -13,6 +13,7 @@ public record LoginInactiveResponse(
         Long otpExpiresIn,       // Số giây còn lại cho đến khi OTP hết hạn
         Long cooldownRemaining,  // Số giây còn lại để được phép resend OTP
         Integer wrongRemaining,   // Số lượt nhập OTP còn lại
-        Long attemptsTTL          // TTL còn lại của otp:attempt:{userId}
+        Long attemptsTTL,        // TTL còn lại của otp:attempt:{userId}
+        String pendingToken      // MỚI: null với web (dùng cookie), mobile xác thực OTP session
 ) implements LoginResult {
 }

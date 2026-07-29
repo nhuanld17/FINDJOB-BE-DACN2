@@ -19,8 +19,8 @@ import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
-import org.springframework.security.web.util.matcher.OrRequestMatcher;
-import org.springframework.security.web.util.matcher.RequestMatcher;
+import org.springframework.util.AntPathMatcher;
+import org.springframework.util.PathMatcher;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
@@ -37,13 +37,18 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     private final AuthenticationEntryPoint authenticationEntryPoint;
     private final TokenBlacklistService tokenBlacklistService;
 
-    private final RequestMatcher publicEndpointsMatcher =
-            new OrRequestMatcher(SecurityConfig.publicMatchers());
+    private final PathMatcher pathMatcher = new AntPathMatcher();
     private final RedisService redisService;
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
-        return publicEndpointsMatcher.matches(request);
+        String path = request.getRequestURI();
+        for (String pattern : SecurityConfig.PUBLIC_PATTERNS) {
+            if (pathMatcher.match(pattern, path)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     @Override

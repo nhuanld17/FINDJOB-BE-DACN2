@@ -6,6 +6,8 @@ import com.example.boilerplate.common.constant.RoleEnum;
 import com.example.boilerplate.common.exception.AccountBannedException;
 import com.example.boilerplate.features.auth.service.OtpService;
 import com.example.boilerplate.features.company.service.CompanyService;
+import com.example.boilerplate.features.employee.entity.Employee;
+import com.example.boilerplate.features.employee.repository.EmployeeRepository;
 import com.example.boilerplate.features.user.entity.Role;
 import com.example.boilerplate.features.user.entity.User;
 import com.example.boilerplate.features.user.repository.RoleRepository;
@@ -26,6 +28,83 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+
+
+/**
+ * <h2>CustomOidcUserService — Xử lý user sau khi Google xác thực OIDC</h2>
+ *
+ * <h3>Vai trò:</h3>
+ * Đây là class <b>quan trọng nhất</b> trong flow OIDC.
+ * Sau khi Google xác thực user thành công và trả về ID token,
+ * Spring Security gọi {@link #loadUser(OidcUserRequest)} để:
+ * <ol>
+ *   <li>Gọi Google UserInfo endpoint lấy thông tin user (email, name, picture, sub…)</li>
+ *   <li><b>Tìm user trong DB local</b> theo email</li>
+ *   <li>
+ *      <b>Phân nhánh:</b>
+ *      <ul>
+ *        <li>Chưa có → <b>Tạo mới</b> user + Employee profile</li>
+ *        <li>Đã có → <b>Link Google account</b> + kích hoạt nếu đang inactive</li>
+ *      </ul>
+ *   </li>
+ *   <li>Trả về {@link CustomOidcUser} chứa {@code userId} local để {@link OidcLoginSuccessHandler} tạo JWT</li>
+ * </ol>
+ *
+ * <h3>Vấn đề class này giải quyết:</h3>
+ * <ul>
+ *   <li><b>Auto-register:</b> User đăng nhập Google lần đầu → tự tạo tài khoản (không cần form đăng ký)</li>
+ *   <li><b>Link tài khoản:</b> User đã đăng ký bằng email/password trước đó → đăng nhập Google bằng cùng email
+ *       → link Google account vào tài khoản hiện tại (thêm {@code socialId})</li>
+ *   <li><b>Auto-activate:</b> User đã register bằng email/password nhưng chưa verify OTP
+ *       → Google đã verify email → auto active user</li>
+ *   <li><b>Xử lý pending intent:</b> User đăng ký EMPLOYER form bằng email/password, chưa xong OTP
+ *       → Google login xong → tạo Company cho user luôn (không cần verify OTP lại)</li>
+ *   <li><b>Tách biệt network DB:</b> Gọi {@code super.loadUser()} (HTTP đến Google) → xong mới chạy DB
+ *       (không giữ connection pool chờ network)</li>
+ * </ul>
+ *
+ * <h3>Luồng chi tiết (loadUser):</h3>
+ * <pre>
+ * 1. super.loadUser() → Gọi Google UserInfo, lấy claims
+ * 2. Kiểm tra email_verified = true (thiếu check này = lỗ hổng account-takeover)
+ * 3. Tìm user trong DB theo email (lowercase + trim khớp với local flow)
+ *    │
+ *    ├── [KHÔNG TÌM THẤY] → User mới
+ *    │     ├── Tạo User với:
+ *    │     │   ├── password = random UUID hash (ko ai login password được, an toàn)
+ *    │     │   ├── active = true (Google đã verify)
+ *    │     │   ├── authProvider = GOOGLE
+ *    │     │   └── roles = [USER]
+ *    │     ├── Tạo Employee profile
+ *    │     └── → Trả về CustomOidcUser
+ *    │
+ *    └── [TÌM THẤY] → User đã tồn tại
+ *          ├── Check BANNED → throw AccountBannedException
+ *          ├── Nếu inactive (chưa verify OTP):
+ *          │     ├── setActive(true)
+ *          │     ├── Xử lý pendingAccountType (COMPANY/USER)
+ *          │     │     ├── EMPLOYER → tạo Company
+ *          │     │     └── USER → tạo Employee nếu chưa có
+ *          │     ├── clear OTP state trong Redis
+ *          │     └── log "Activated inactive user via OIDC"
+ *          ├── Link Google (socialId, avatar nếu thiếu)
+ *          └── → Trả về CustomOidcUser
+ * </pre>
+ *
+ * <h3>Lưu ý bảo mật:</h3>
+ * <ul>
+ *   <li>Check {@code email_verified} trước — nếu không, attacker tạo Gmail chưa verify
+ *       → login được vào victim account (account-takeover)</li>
+ *   <li>KHÔNG ghi đè {@code authProvider = LOCAL} — nếu user đã đăng ký bằng password trước,
+ *       vẫn giữ LOCAL để không mất khả năng login bằng password</li>
+ *   <li>Password random hash — user Google không có password thật, ko ai login được</li>
+ * </ul>
+ *
+ * @see OidcUserService
+ * @see CustomOidcUser
+ * @see OidcLoginSuccessHandler
+ * @see com.example.boilerplate.features.user.entity.User
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -36,6 +115,7 @@ public class CustomOidcUserService extends OidcUserService {
     private final OtpService otpService;
     private final PasswordEncoder passwordEncoder;
     private final CompanyService companyService;
+    private final EmployeeRepository employeeRepository;
 
     @Override
     public OidcUser loadUser(OidcUserRequest userRequest) throws OAuth2AuthenticationException {
@@ -105,6 +185,11 @@ public class CustomOidcUserService extends OidcUserService {
 
             userRepository.save(user);
 
+            // Tạo Employee profile cho user mới (quyền USER)
+            Employee employee = new Employee();
+            employee.setUser(user);
+            employeeRepository.save(employee);
+
             log.info("Created new user from OIDC: email={}", email);
         } else {
             // ===== USER ĐÃ TỒN TẠI: Link Google account =====
@@ -146,6 +231,15 @@ public class CustomOidcUserService extends OidcUserService {
                     String companyName = (pendingCompanyName != null && !pendingCompanyName.isBlank())
                             ? pendingCompanyName : user.getUsername();
                     companyService.createCompanyForOwner(user, companyName);
+                }
+
+                // USER: đảm bảo có Employee profile
+                if (pending == AccountType.USER) {
+                    if (employeeRepository.findByUserId(user.getId()).isEmpty()) {
+                        Employee employee = new Employee();
+                        employee.setUser(user);
+                        employeeRepository.save(employee);
+                    }
                 }
 
                 // Dọn Redis state OTP — tránh sót key otp:*, pending:* tới hết TTL

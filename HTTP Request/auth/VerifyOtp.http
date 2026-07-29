@@ -1,0 +1,26 @@
+### Xác thực OTP (web - cookie)
+POST http://localhost:8080/api/v1/auth/verify-otp
+Content-Type: application/json
+Cookie: pendingToken=your-pending-token-here
+
+{
+  "otp": "123456"
+}
+
+### Xác thực OTP (mobile - header X-Pending-Token)
+POST http://localhost:8080/api/v1/auth/verify-otp
+Content-Type: application/json
+X-Pending-Token: your-pending-token-here
+
+{
+  "otp": "123456"
+}
+
+### Xác thực OTP sai
+POST http://localhost:8080/api/v1/auth/verify-otp
+Content-Type: application/json
+Cookie: pendingToken=your-pending-token-here
+
+{
+  "otp": "000000"
+}

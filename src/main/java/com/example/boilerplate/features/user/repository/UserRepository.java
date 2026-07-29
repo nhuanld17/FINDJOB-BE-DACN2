@@ -5,9 +5,9 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
-import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.stereotype.Repository;
 
 import java.util.Optional;
@@ -84,4 +84,12 @@ public interface UserRepository extends JpaRepository<User,Long> {
     boolean isUserNameAlreadyInUse(@Param("username") String username, @Param("email") String email);
 
     Optional<User> findByUsername(String username);
+
+    /**
+     * Cập nhật mật khẩu mới cho user — dùng JPQL update trực tiếp,
+     * tránh load toàn bộ entity khi không cần thiết.
+     */
+    @Modifying(clearAutomatically = true)
+    @Query("UPDATE User u SET u.password = :password WHERE u.id = :id")
+    void updatePassword(@Param("id") Long id, @Param("password") String password);
 }

@@ -1,6 +1,7 @@
 package com.example.boilerplate.features.job.entity;
 
 import com.example.boilerplate.common.base.BaseEntity;
+import com.example.boilerplate.common.constant.City;
 import com.example.boilerplate.common.constant.JobStatus;
 import com.example.boilerplate.common.constant.JobType;
 import com.example.boilerplate.common.constant.Seniority;
@@ -63,8 +64,8 @@ public class Job extends BaseEntity {
     @Column(name = "salary_currency", length = 10)
     private String salaryCurrency = "VND";
 
-    @Column(name = "years_of_experience", length = 30)
-    private String yearsOfExperience;
+    @Column(name = "years_of_experience")
+    private Integer yearsOfExperience;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30)
@@ -77,8 +78,9 @@ public class Job extends BaseEntity {
     @Column(length = 255)
     private String location;
 
-    @Column(nullable = false, length = 100)
-    private String city;
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 50)
+    private City city;
 
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "skills_required", columnDefinition = "jsonb")

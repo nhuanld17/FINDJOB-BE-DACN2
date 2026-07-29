@@ -58,21 +58,41 @@ public enum ErrorCode {
     JOB_ALREADY_CLOSED(2018, "Job is already closed", HttpStatus.BAD_REQUEST),
     JOB_EXPIRED(2019, "Job has expired", HttpStatus.BAD_REQUEST),
     JOB_SLUG_DUPLICATE(2020, "Job slug already exists in this company", HttpStatus.CONFLICT),
+    EXPIRY_DATE_IN_PAST(2029, "Expiry date cannot be in the past", HttpStatus.BAD_REQUEST),
 
     // ===== Application =====
     APPLICATION_NOT_FOUND(2021, "Application not found", HttpStatus.NOT_FOUND),
     APPLICATION_ALREADY_EXISTS(2022, "You have already applied to this job", HttpStatus.CONFLICT),
     APPLICATION_NOT_OWNER(2023, "This application does not belong to you", HttpStatus.FORBIDDEN),
+    APPLICATION_CANNOT_CANCEL(2030, "Application cannot be cancelled in its current status", HttpStatus.BAD_REQUEST),
+    INVALID_APPLICATION_STATUS(2034, "Invalid application status transition", HttpStatus.BAD_REQUEST),
+    REJECTED_REASON_REQUIRED(2035, "Rejected reason is required when rejecting an application", HttpStatus.BAD_REQUEST),
+    APPLICATION_ALREADY_FINALIZED(2039, "Cannot modify a finalized application", HttpStatus.BAD_REQUEST),
 
     // ===== Category =====
     CATEGORY_NOT_FOUND(2024, "Category not found", HttpStatus.NOT_FOUND),
     CATEGORY_ALREADY_EXISTS(2025, "Category already exists", HttpStatus.CONFLICT),
 
+    // ===== Follow =====
+    ALREADY_FOLLOWING(2026, "Already following this company", HttpStatus.CONFLICT),
+    NOT_FOLLOWING(2027, "Not following this company", HttpStatus.BAD_REQUEST),
+    // ===== Saved Job =====
+    ALREADY_SAVED_JOB(2031, "Job already saved", HttpStatus.CONFLICT),
+    NOT_SAVED_JOB(2032, "Job not saved yet", HttpStatus.BAD_REQUEST),
+    CERTIFICATE_NOT_FOUND(2033, "Certificate not found", HttpStatus.NOT_FOUND),
+    INACTIVE_JOB(2038, "Inactive job", HttpStatus.CONFLICT ),
+    INVALID_DATE_RANGE(2040, "Start date must be before end date", HttpStatus.BAD_REQUEST),
+
+    // ===== Review =====
+    REVIEW_NOT_FOUND(2036, "Review not found", HttpStatus.NOT_FOUND),
+    REVIEW_ALREADY_EXISTS(2037, "You have already reviewed this company", HttpStatus.CONFLICT),
+
     // ===== Notification =====
-    NOTIFICATION_NOT_FOUND(2026, "Notification not found", HttpStatus.NOT_FOUND),
+    NOTIFICATION_NOT_FOUND(2028, "Notification not found", HttpStatus.NOT_FOUND),
 
     // ===== System =====
-    INTERNAL_ERROR(9999, "Internal server error", HttpStatus.INTERNAL_SERVER_ERROR);
+    INTERNAL_ERROR(9999, "Internal server error", HttpStatus.INTERNAL_SERVER_ERROR),
+    ;
 
     ErrorCode(int code, String message, HttpStatusCode httpStatusCode) {
         this.code = code;

@@ -19,14 +19,13 @@ import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.oauth2.client.registration.ClientRegistrationRepository;
+import org.springframework.security.oauth2.client.web.DefaultOAuth2AuthorizationRequestResolver;
+import org.springframework.security.oauth2.client.web.OAuth2AuthorizationRequestCustomizers;
 import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
-import org.springframework.security.web.util.matcher.AntPathRequestMatcher;
-import org.springframework.security.web.util.matcher.RequestMatcher;
-
-import java.util.Arrays;
 
 @Configuration
 @EnableWebSecurity
@@ -43,46 +42,41 @@ public class SecurityConfig {
             "/api/v1/auth/**",
             "/oauth2/**",
             "/login/oauth2/code/**",
-            "/products/**",
             "/v3/api-docs/**",
             "/swagger-ui/**",
             "/actuator/health"
     };
-
-    public static RequestMatcher[] publicMatchers() {
-        return Arrays.stream(PUBLIC_PATTERNS)
-                .map(AntPathRequestMatcher::new)
-                .toArray(RequestMatcher[]::new);
-    }
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http,
                                                    CustomOidcUserService customOidcUserService,
                                                    OidcLoginSuccessHandler oidcLoginSuccessHandler,
                                                    OidcLoginFailureHandler oidcLoginFailureHandler,
-                                                   RedisOAuth2AuthorizationRequestRepository cookieRepo) throws Exception {
+                                                   RedisOAuth2AuthorizationRequestRepository cookieRepo,
+                                                   ClientRegistrationRepository clientRegistrationRepository) throws Exception {
         http
                 // withDefaults() tự động tìm bean tên "corsConfigurationSource" trong
                 // application context và áp dụng CORS từ đó — xem CorsConfig.corsConfigurationSource()
                 .cors(Customizer.withDefaults())
                 .csrf(AbstractHttpConfigurer::disable)
-                .sessionManagement(session -> {
-                    session.sessionCreationPolicy(SessionCreationPolicy.STATELESS);
-                })
-                .exceptionHandling(exception -> {
-                    exception.authenticationEntryPoint(authenticationEntryPoint)
-                            .accessDeniedHandler(accessDeniedHandler);
-                })
-                // Spring Security 7 uses PathPatternRequestMatcher instead of antMatchers/mvcMatchers
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+
+                .exceptionHandling(exception ->
+                        exception.authenticationEntryPoint(authenticationEntryPoint)
+                                .accessDeniedHandler(accessDeniedHandler))
+
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(PUBLIC_PATTERNS).permitAll()
-                                .anyRequest().authenticated()
-                        )
+                        .anyRequest().authenticated()
+                )
                 .oauth2Login(oauth2 -> oauth2
                         .authorizationEndpoint(auth -> auth
-                                .authorizationRequestRepository(cookieRepo))
+                                .authorizationRequestRepository(cookieRepo)
+                                .authorizationRequestResolver(pkceResolver(clientRegistrationRepository)))
+
                         .userInfoEndpoint(userInfo -> userInfo
                                 .oidcUserService(customOidcUserService))
+
                         .successHandler(oidcLoginSuccessHandler)
                         .failureHandler(oidcLoginFailureHandler)
                 )
@@ -90,6 +84,33 @@ public class SecurityConfig {
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class);
 
         return http.build();
+    }
+
+    /**
+     * Tạo {@link DefaultOAuth2AuthorizationRequestResolver} với PKCE (Proof Key for Code Exchange).
+     *
+     * <p>PKCE thêm {@code code_challenge} + {@code code_challenge_method=S256} vào authorization
+     * request gửi lên Google, và lưu {@code code_verifier} trong attributes của
+     * {@code OAuth2AuthorizationRequest}. Khi Google gửi callback, Spring Security tự động
+     * dùng {@code code_verifier} để exchange authorization code lấy token.
+     *
+     * <p>Mặc dù backend là confidential client (đã có {@code client_secret}), PKCE vẫn là
+     * best practice — bảo vệ authorization code ngay cả khi secret bị leak.
+     *
+     * <p>code_verifier được lưu trong {@code OAuth2AuthorizationRequest.attributes} (String),
+     * do đó JDK serialization qua Redis vẫn hoạt động bình thường.
+     */
+    private DefaultOAuth2AuthorizationRequestResolver pkceResolver(
+            ClientRegistrationRepository clientRegistrationRepository) {
+        DefaultOAuth2AuthorizationRequestResolver resolver =
+                new DefaultOAuth2AuthorizationRequestResolver(
+                        clientRegistrationRepository,
+                        "/oauth2/authorization"
+                );
+        resolver.setAuthorizationRequestCustomizer(
+                OAuth2AuthorizationRequestCustomizers.withPkce()
+        );
+        return resolver;
     }
 
     @Bean

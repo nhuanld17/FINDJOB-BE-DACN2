@@ -1,0 +1,2 @@
+### Lấy thông tin company theo slug (public)
+GET http://localhost:8080/api/v1/companies/slug/cong-ty-tnhh-abc

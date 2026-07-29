@@ -1,0 +1,19 @@
+### Cập nhật thông tin company
+PUT http://localhost:8080/api/v1/companies/1
+Content-Type: application/json
+Authorization: Bearer your-access-token
+
+{
+  "name": "ABC Technology Company",
+  "description": "Công ty công nghệ hàng đầu Việt Nam",
+  "website": "https://abctech.vn",
+  "companySize": "50-100",
+  "industry": "Công nghệ thông tin",
+  "city": "Hồ Chí Minh",
+  "address": "123 Nguyễn Huệ, Quận 1",
+  "email": "contact@abctech.vn",
+  "phone": "0123456789",
+  "facebookUrl": "https://facebook.com/abctech",
+  "linkedinUrl": "https://linkedin.com/company/abctech",
+  "contactPosition": "HR Manager"
+}
