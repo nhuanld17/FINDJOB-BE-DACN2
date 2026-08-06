@@ -1,6 +1,7 @@
 package com.example.boilerplate.features.application.repository;
 
 import com.example.boilerplate.common.constant.ApplicationStatus;
+import com.example.boilerplate.common.constant.JobStatus;
 import com.example.boilerplate.features.application.entity.Application;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -32,6 +33,24 @@ public interface ApplicationRepository extends JpaRepository<Application, Long> 
         WHERE a.employee.id = :employeeId
     """)
     Page<Application> findByEmployeeIdWithJobFetch(@Param("employeeId") Long employeeId, Pageable pageable);
+
+    /**
+     * Giống {@link #findByEmployeeIdWithJobFetch(Long, Pageable)} nhưng lọc thêm
+     * theo trạng thái của JOB (ACTIVE/EXPIRED/...) — dùng cho filter chips
+     * "Tất cả / Đang tuyển / Hết hạn" trên màn Việc làm đã ứng tuyển.
+     */
+    @Query("""
+        SELECT a FROM Application a
+        JOIN FETCH a.job j
+        JOIN FETCH j.company
+        WHERE a.employee.id = :employeeId
+          AND j.status = :jobStatus
+    """)
+    Page<Application> findByEmployeeIdWithJobFetchAndJobStatus(
+            @Param("employeeId") Long employeeId,
+            @Param("jobStatus") JobStatus jobStatus,
+            Pageable pageable
+    );
     Optional<Application> findByJobIdAndEmployeeId(Long jobId, Long employeeId);
     long countByJobId(Long jobId);
     long countByJobIdAndStatus(Long jobId, String status);

@@ -8,6 +8,7 @@ import com.example.boilerplate.common.response.PaginatedResult;
 import com.example.boilerplate.features.application.dto.request.UpdateApplicationStatusRequest;
 import com.example.boilerplate.features.application.dto.response.ApplicationDetailResponse;
 import com.example.boilerplate.features.application.dto.response.ApplicationResponse;
+import com.example.boilerplate.features.application.dto.response.ApplicationStatusResponse;
 import com.example.boilerplate.features.application.dto.response.ApplicationSummaryResponse;
 import com.example.boilerplate.features.application.entity.Application;
 import com.example.boilerplate.features.application.querydsl.ApplicationQueryDSL;
@@ -17,6 +18,7 @@ import com.example.boilerplate.features.employee.repository.EmployeeRepository;
 import com.example.boilerplate.features.job.entity.Job;
 import com.example.boilerplate.features.job.repository.JobRepository;
 import com.example.boilerplate.infrastructure.cloudinary.CloudinaryService;
+import com.example.boilerplate.infrastructure.mail.EmailService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
@@ -39,6 +41,7 @@ public class ApplicationService {
     private final JobRepository jobRepository;
     private final CloudinaryService cloudinaryService;
     private final ApplicationQueryDSL applicationQueryDSL;
+    private final EmailService emailService;
 
     /**
      * Ứng tuyển / cập nhật CV cho một job.
@@ -139,6 +142,8 @@ public class ApplicationService {
      * Huỷ ứng tuyển — xoá hẳn application khỏi DB + xoá CV trên Cloudinary.
      * <p>
      * Chỉ chủ sở hữu mới được huỷ.
+     * Chỉ được huỷ khi đơn còn PENDING — đơn đã được công ty xử lý
+     * (REVIEWING/SHORTLISTED/ACCEPTED/REJECTED) thì không cho huỷ nữa.
      * Sau khi huỷ → apply_count -= 1.
      */
     @Transactional
@@ -149,6 +154,13 @@ public class ApplicationService {
         // Chỉ chủ sở hữu mới được huỷ
         if (!application.getEmployee().getUser().getId().equals(userId)) {
             throw new AppException(ErrorCode.APPLICATION_NOT_OWNER);
+        }
+
+        // Chỉ cho huỷ khi đơn còn PENDING — nếu công ty đã bắt đầu xử lý
+        // (REVIEWING/SHORTLISTED/ACCEPTED/REJECTED) thì chặn, tránh user
+        // huỷ đơn đang trong quá trình tuyển dụng.
+        if (application.getStatus() != ApplicationStatus.PENDING) {
+            throw new AppException(ErrorCode.APPLICATION_CANNOT_CANCEL);
         }
 
         Long jobId = application.getJob().getId();
@@ -168,13 +180,59 @@ public class ApplicationService {
     }
 
     /**
-     * Lấy danh sách jobs đã apply của user hiện tại (phân trang, mới nhất trước).
+     * Kiểm tra user hiện tại đã ứng tuyển job này chưa.
+     * <p>
+     * Dùng để hiển thị trạng thái nút "Ứng tuyển" trên màn chi tiết job
+     * (pattern giống SavedJobService.isSaved):
+     * - Chưa apply → { isApplied: false, applicationId: null, status: null, cvUrl: null }
+     * - Đã apply → { isApplied: true, applicationId, status hiện tại, cvUrl của đơn }
+     *
+     * @param userId ID của user hiện tại
+     * @param jobId  ID của job cần kiểm tra
+     * @return ApplicationStatusResponse
      */
     @Transactional(readOnly = true)
-    public PaginatedResult<ApplicationResponse> getMyApplications(Long userId, int page, int size) {
+    public ApplicationStatusResponse getApplicationStatus(Long userId, Long jobId) {
+        Employee employee = getEmployeeOrThrow(userId);
+
+        var existing = applicationRepository
+                .findByJobIdAndEmployeeId(jobId, employee.getId());
+
+        if (existing.isEmpty()) {
+            return ApplicationStatusResponse.builder()
+                    .isApplied(false)
+                    .applicationId(null)
+                    .status(null)
+                    .cvUrl(null)
+                    .build();
+        }
+
+        Application application = existing.get();
+        return ApplicationStatusResponse.builder()
+                .isApplied(true)
+                .applicationId(application.getId())
+                .status(application.getStatus())
+                .cvUrl(application.getCvUrl())
+                .build();
+    }
+
+    /**
+     * Lấy danh sách jobs đã apply của user hiện tại (phân trang, mới nhất trước).
+     *
+     * @param jobStatus Lọc theo trạng thái của JOB (ACTIVE/EXPIRED/...) —
+     *                  null = tất cả. Dùng cho filter chips "Tất cả / Đang tuyển / Hết hạn".
+     */
+    @Transactional(readOnly = true)
+    public PaginatedResult<ApplicationResponse> getMyApplications(Long userId, JobStatus jobStatus, int page, int size) {
         Employee employee = getEmployeeOrThrow(userId);
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "appliedAt"));
-        Page<Application> appPage = applicationRepository.findByEmployeeIdWithJobFetch(employee.getId(), pageable);
+
+        // Nếu có filter jobStatus → query riêng lọc theo status của job.
+        // Nếu null → query gốc (tất cả), không thêm điều kiện.
+        Page<Application> appPage = (jobStatus == null)
+                ? applicationRepository.findByEmployeeIdWithJobFetch(employee.getId(), pageable)
+                : applicationRepository.findByEmployeeIdWithJobFetchAndJobStatus(employee.getId(), jobStatus, pageable);
+
         return PaginatedResult.fromPage(appPage, this::toResponse);
     }
 
@@ -331,6 +389,29 @@ public class ApplicationService {
 
         applicationRepository.save(application);
 
+        // === 6. Gửi email thông báo cho ứng viên (async, không chặn API) ===
+        // ACCEPTED / REJECTED là quyết định cuối → thông báo qua mail.
+        // - Email của ứng viên luôn có (NOT NULL) — KHÔNG phụ thuộc isPublic
+        // - Phải đọc giá trị TRƯỚC khi gọi (thread async có thể chạy sau khi
+        //   transaction commit — tránh lazy loading ở thread khác)
+        // - @Async chạy thread riêng → email fail không rollback việc đổi status
+        if (newStatus == ApplicationStatus.ACCEPTED
+                || newStatus == ApplicationStatus.REJECTED) {
+            var applicant = application.getEmployee().getUser();
+            String jobTitle = application.getJob().getTitle();
+            String companyName = application.getJob().getCompany().getName();
+
+            if (newStatus == ApplicationStatus.ACCEPTED) {
+                emailService.sendApplicationAcceptedEmail(
+                        applicant.getEmail(), applicant.getFullName(),
+                        jobTitle, companyName);
+            } else {
+                emailService.sendApplicationRejectedEmail(
+                        applicant.getEmail(), applicant.getFullName(),
+                        jobTitle, companyName, application.getRejectedReason());
+            }
+        }
+
         log.info("Application {} status updated: {} → {} by user {}",
                 applicationId, oldStatus, newStatus, userId);
 
@@ -381,18 +462,21 @@ public class ApplicationService {
     }
 
     private ApplicationResponse toResponse(Application application) {
+        Job job = application.getJob();
         return ApplicationResponse.builder()
                 .id(application.getId())
-                .jobId(application.getJob().getId())
-                .jobTitle(application.getJob().getTitle())
-                .companyId(application.getJob().getCompany().getId())
-                .companyName(application.getJob().getCompany().getName())
-                .companyLogoUrl(application.getJob().getCompany().getLogoUrl())
+                .jobId(job.getId())
+                .jobTitle(job.getTitle())
+                .companyId(job.getCompany().getId())
+                .companyName(job.getCompany().getName())
+                .companyLogoUrl(job.getCompany().getLogoUrl())
                 .employeeId(application.getEmployee().getId())
                 .coverLetter(application.getCoverLetter())
                 .cvUrl(application.getCvUrl())
                 .status(application.getStatus())
                 .appliedAt(application.getAppliedAt())
+                .jobStatus(job.getStatus())
+                .expired(job.getExpiryDate().isBefore(LocalDate.now()))
                 .build();
     }
 

@@ -11,6 +11,7 @@ import com.example.boilerplate.features.company.service.CompanyService;
 import com.example.boilerplate.infrastructure.security.CustomUserDetails;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
@@ -18,6 +19,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+@Slf4j
 @RestController
 @RequestMapping("/api/v1/companies")
 @RequiredArgsConstructor
@@ -31,6 +33,7 @@ public class CompanyController {
     public ResponseEntity<APIResponse<CompanyResponse>> getMyCompany(
             @AuthenticationPrincipal CustomUserDetails userDetails
     ) {
+        log.info("######## GET COMPANIES PROFILE FOR OWNER #############");
         CompanyResponse response = companyService.getMyCompany(userDetails);
         return ResponseEntity.ok(APIResponse.success(response));
     }

@@ -1,5 +1,6 @@
 package com.example.boilerplate.infrastructure.security;
 
+import com.example.boilerplate.common.constant.AuthProvider;
 import com.example.boilerplate.features.user.entity.Role;
 import com.example.boilerplate.features.user.entity.User;
 import lombok.Getter;
@@ -22,6 +23,7 @@ public class CustomUserDetails implements UserDetails {
     private final boolean active;
     private final boolean deleted;
     private final Set<Role> roles;
+    private final AuthProvider authProvider;
     private final List<SimpleGrantedAuthority> authorities;
 
     public CustomUserDetails(User user) {
@@ -33,6 +35,7 @@ public class CustomUserDetails implements UserDetails {
         this.active   = user.isActive();
         this.deleted  = user.isDeleted();
         this.roles = user.getRoles();
+        this.authProvider = user.getAuthProvider();
 
         this.authorities = new ArrayList<>();
         for (var role : user.getRoles()) {

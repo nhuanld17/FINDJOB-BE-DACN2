@@ -5,7 +5,10 @@ import jakarta.validation.constraints.Size;
 
 public record ChangePasswordRequest(
 
-        @NotBlank(message = "BLANK_FIELD")
+        // KHÔNG còn @NotBlank — user Google (authProvider != LOCAL, password = null)
+        // KHÔNG có mật khẩu cũ → gửi null/rỗng là hợp lệ.
+        // Service tự quyết định: có password mới check oldPassword, không có thì bỏ qua.
+        @Size(max = 72, message = "INVALID_PASSWORD")
         String oldPassword,
 
         @NotBlank(message = "BLANK_FIELD")

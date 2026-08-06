@@ -129,6 +129,7 @@ public class FollowService {
                 .companyLogoUrl(company.getLogoUrl())
                 .industry(company.getIndustry())
                 .city(company.getCity())
+                .followerCount(company.getFollowerCount())
                 .build();
     }
 

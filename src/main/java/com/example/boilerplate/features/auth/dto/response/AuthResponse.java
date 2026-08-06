@@ -10,7 +10,9 @@ public record AuthResponse(
     String username,
     Set<Role> roles,
     String accessToken,
-    String refreshToken   // MỚI: null với web (dùng cookie HttpOnly), có giá trị với mobile (lưu Keychain)
+    String refreshToken,   // MỚI: null với web (dùng cookie HttpOnly), có giá trị với mobile (lưu Keychain)
+    boolean hasPassword    // MỚI: user đã có mật khẩu cũ chưa (Google user = false)
+                           // FE dựa vào đây để hiện 3 field (đổi mk) hay 2 field (đặt mk lần đầu)
 ) implements LoginResult {
 }
 

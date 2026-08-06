@@ -94,6 +94,15 @@ spring:
     default-schema: ${DB_SCHEMA}
     baseline-on-migrate: true
 
+  ai:
+    openai:
+      base-url: https://api.groq.com/openai
+      api-key: ${GROQ_API_KEY:}
+      chat:
+        options:
+          model: llama-3.3-70b-versatile
+          temperature: 0.1
+
 jwt:
   secret: ${JWT_SECRET}
   access-token-expiration-ms: ${ACCESS_TOKEN_LIFETIME}
@@ -106,6 +115,14 @@ app:
     # Danh sách scheme mobile được phép nhận redirect kèm ticket, phân cách bằng dấu phẩy.
     # Production CHỈ có findjob://. exp:// là scheme của Expo Go — CHỈ bật khi dev.
     allowed-mobile-schemes: ${APP_OAUTH2_ALLOWED_MOBILE_SCHEMES:findjob://}
+
+  # ===== Seed dữ liệu job (chỉ dùng khi dev/test) =====
+  # JobDataSeeder (CommandLineRunner) — seed job + job_categories cho các
+  # công ty CHƯA có job (idempotent, chạy mỗi lần start app).
+  # Bật lên khi cần dữ liệu để test keyset pagination, tắt đi khi không cần.
+  seed-jobs:
+    enabled: ${SEED_JOBS_ENABLED:true}   # true = chạy seeder khi start app
+    per-company: ${SEED_JOBS_PER_COMPANY:45}  # số job seed cho mỗi công ty chưa có job
 
 cloudinary:
   cloud-name: ${CLOUDINARY_CLOUD_NAME}

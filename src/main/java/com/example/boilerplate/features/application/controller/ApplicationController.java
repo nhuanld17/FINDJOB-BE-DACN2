@@ -1,11 +1,13 @@
 package com.example.boilerplate.features.application.controller;
 
 import com.example.boilerplate.common.constant.ApplicationStatus;
+import com.example.boilerplate.common.constant.JobStatus;
 import com.example.boilerplate.common.response.APIResponse;
 import com.example.boilerplate.common.response.PaginatedResult;
 import com.example.boilerplate.features.application.dto.request.UpdateApplicationStatusRequest;
 import com.example.boilerplate.features.application.dto.response.ApplicationDetailResponse;
 import com.example.boilerplate.features.application.dto.response.ApplicationResponse;
+import com.example.boilerplate.features.application.dto.response.ApplicationStatusResponse;
 import com.example.boilerplate.features.application.dto.response.ApplicationSummaryResponse;
 import com.example.boilerplate.features.application.service.ApplicationService;
 import com.example.boilerplate.infrastructure.security.CustomUserDetails;
@@ -60,18 +62,39 @@ public class ApplicationController {
     }
 
     /**
+     * [User] Kiểm tra user hiện tại đã ứng tuyển job này chưa.
+     * Trả về { isApplied, applicationId, status } — dùng cho nút "Ứng tuyển"
+     * trên màn chi tiết job (pattern giống saved-jobs status).
+     */
+    @GetMapping("/jobs/{jobId}/status")
+    @PreAuthorize("hasRole('USER')")
+    public ResponseEntity<APIResponse<ApplicationStatusResponse>> getApplicationStatus(
+            @PathVariable Long jobId,
+            @AuthenticationPrincipal CustomUserDetails userDetails
+    ) {
+        ApplicationStatusResponse response = applicationService.getApplicationStatus(
+                userDetails.getId(), jobId
+        );
+        return ResponseEntity.ok(APIResponse.success(response));
+    }
+
+    /**
      * Lấy danh sách job đã apply của user hiện tại.
      * Sắp xếp theo thời gian apply mới nhất trước, có phân trang.
+     * <p>
+     * Có thể lọc theo trạng thái JOB ({@code jobStatus}) — ACTIVE / EXPIRED / ...
+     * Bỏ trống = tất cả. App dùng để hiển thị "Tất cả / Đang tuyển / Hết hạn".
      */
     @GetMapping("/me")
     @PreAuthorize("hasRole('USER')")
     public ResponseEntity<APIResponse<PaginatedResult<ApplicationResponse>>> getMyApplications(
+            @RequestParam(required = false) JobStatus jobStatus,
             @RequestParam(name = "page", defaultValue = "0") int page,
             @RequestParam(name = "size", defaultValue = "20") int size,
             @AuthenticationPrincipal CustomUserDetails userDetails
     ) {
         PaginatedResult<ApplicationResponse> response = applicationService.getMyApplications(
-                userDetails.getId(), page, size
+                userDetails.getId(), jobStatus, page, size
         );
         return ResponseEntity.ok(APIResponse.success(response));
     }

@@ -55,6 +55,7 @@ public interface JobRepository extends JpaRepository<Job, Long> {
      */
     @Query("""
         SELECT j FROM Job j
+        JOIN FETCH j.company
         WHERE j.company.id = :companyId
         AND j.deleted = false
         AND j.status IN :statuses

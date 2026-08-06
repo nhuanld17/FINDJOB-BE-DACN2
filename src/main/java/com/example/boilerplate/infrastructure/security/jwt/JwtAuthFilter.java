@@ -44,10 +44,21 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
         for (String pattern : SecurityConfig.PUBLIC_PATTERNS) {
+
+            /**
+             * Ngoại lệ: change-password yêu cầu đăng nhập (@PreAuthorize isAuthenticated)
+             * Nên dù nằm trong pattern /api/auth/** - Vẫn không skip api này, phải
+             * parse jwt để xét SecurityContext, nếu không mọi request đều bị 403
+             */
+            if ("/api/v1/auth/change-password".equals(path)) {
+                return false;
+            }
+
             if (pathMatcher.match(pattern, path)) {
                 return true;
             }
         }
+
         return false;
     }
 

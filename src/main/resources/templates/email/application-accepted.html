@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="vi" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hồ sơ đã được duyệt</title>
+</head>
+<body style="font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 40px;">
+<div style="max-width: 480px; margin: 0 auto; background: #ffffff;
+                border-radius: 8px; padding: 40px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+
+    <h2 style="color: #01696f;">Chúc mừng! Hồ sơ của bạn đã được duyệt ✅</h2>
+
+    <p style="color: #666666;">
+        Xin chào <strong th:text="${fullName}">Bạn</strong>,
+    </p>
+
+    <p style="color: #666666;">
+        Hồ sơ ứng tuyển của bạn cho vị trí
+        <strong th:text="${jobTitle}">Job Title</strong> tại
+        <strong th:text="${companyName}">Company</strong>
+        đã được <strong>duyệt</strong>.
+    </p>
+
+    <div style="background-color: #f0f9f9; border-radius: 6px;
+                    padding: 16px; margin: 24px 0;">
+        <p style="margin: 0; color: #333333;">
+            🎯 Nhà tuyển dụng sẽ liên hệ với bạn trong thời gian tới.<br>
+            Vui lòng theo dõi email và số điện thoại để nhận thông báo tiếp theo.
+        </p>
+    </div>
+
+    <p style="color: #666666;">
+        Chúc bạn may mắn trong quá trình phỏng vấn!
+    </p>
+
+    <p style="color: #999999; font-size: 12px; margin-top: 32px;">
+        This is an automated email — please do not reply to this message.
+    </p>
+</div>
+</body>
+</html>

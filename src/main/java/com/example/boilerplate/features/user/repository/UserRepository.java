@@ -1,9 +1,6 @@
 package com.example.boilerplate.features.user.repository;
 
 import com.example.boilerplate.features.user.entity.User;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.Pattern;
-import jakarta.validation.constraints.Size;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;

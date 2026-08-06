@@ -15,7 +15,6 @@ import com.example.boilerplate.features.user.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.oauth2.client.oidc.userinfo.OidcUserRequest;
 import org.springframework.security.oauth2.client.oidc.userinfo.OidcUserService;
 import org.springframework.security.oauth2.core.OAuth2AuthenticationException;
@@ -26,7 +25,6 @@ import org.springframework.stereotype.Service;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 
 
@@ -71,7 +69,7 @@ import java.util.UUID;
  *    │
  *    ├── [KHÔNG TÌM THẤY] → User mới
  *    │     ├── Tạo User với:
- *    │     │   ├── password = random UUID hash (ko ai login password được, an toàn)
+ *    │     │   ├── password = NULL (user Google chưa có mật khẩu, đặt lần đầu qua change-password)
  *    │     │   ├── active = true (Google đã verify)
  *    │     │   ├── authProvider = GOOGLE
  *    │     │   └── roles = [USER]
@@ -97,7 +95,8 @@ import java.util.UUID;
  *       → login được vào victim account (account-takeover)</li>
  *   <li>KHÔNG ghi đè {@code authProvider = LOCAL} — nếu user đã đăng ký bằng password trước,
  *       vẫn giữ LOCAL để không mất khả năng login bằng password</li>
- *   <li>Password random hash — user Google không có password thật, ko ai login được</li>
+ *   <li>password = NULL — user Google chưa có mật khẩu, đặt lần đầu qua change-password
+ *       (không ai login bằng email/password được cho đến khi đặt)</li>
  * </ul>
  *
  * @see OidcUserService
@@ -113,7 +112,6 @@ public class CustomOidcUserService extends OidcUserService {
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
     private final OtpService otpService;
-    private final PasswordEncoder passwordEncoder;
     private final CompanyService companyService;
     private final EmployeeRepository employeeRepository;
 
@@ -163,8 +161,8 @@ public class CustomOidcUserService extends OidcUserService {
             user.setUsername(generateUniqueUsername(email));
             user.setFullName(name);
             user.setAvatarUrl(picture);
-            // → Hash UUID ngẫu nhiên: không ai login password được, an toàn
-            user.setPassword(passwordEncoder.encode(UUID.randomUUID().toString()));
+            // Set password null cho người dùng đăng kí bằng google
+            user.setPassword(null);
             user.setActive(true);                  // Google đã verify → auto active
             user.setDeleted(false);
             user.setAuthProvider(AuthProvider.GOOGLE);

@@ -441,6 +441,7 @@ public class CompanyService {
 
         // 6. Gom nhóm application theo trạng thái
         Map<String, Long> applicationsByStatus = new LinkedHashMap<>();
+
         // Khởi tạo tất cả trạng thái với 0, đảm bảo luôn có đủ key
         for (var status : com.example.boilerplate.common.constant.ApplicationStatus.values()) {
             applicationsByStatus.put(status.name(), 0L);

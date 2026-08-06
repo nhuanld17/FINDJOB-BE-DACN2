@@ -1,10 +1,12 @@
 package com.example.boilerplate.features.employee.controller;
 
 import com.example.boilerplate.common.response.APIResponse;
+import com.example.boilerplate.common.response.PaginatedResult;
 import com.example.boilerplate.features.employee.dto.request.CertificateRequest;
 import com.example.boilerplate.features.employee.dto.request.EducationDto;
 import com.example.boilerplate.features.employee.dto.request.ExperienceDto;
 import com.example.boilerplate.features.employee.dto.request.UpdateEmployeeRequest;
+import com.example.boilerplate.features.employee.dto.response.CandidateSummaryResponse;
 import com.example.boilerplate.features.employee.dto.response.EmployeeResponse;
 import com.example.boilerplate.features.employee.service.EmployeeService;
 import com.example.boilerplate.infrastructure.security.CustomUserDetails;
@@ -27,6 +29,35 @@ public class EmployeeController {
     private final EmployeeService employeeService;
 
     /**
+     * Tìm kiếm ứng viên (dành cho COMPANY — nhà tuyển dụng).
+     * <p>
+     * CHỈ trả hồ sơ CÔNG KHAI (isPublic = true); loại user bị ban.
+     * Route /search (literal) được Spring ưu tiên hơn /{id} — không conflict.
+     *
+     * @param search       Từ khoá: tên / chức danh / kỹ năng (containsIgnoreCase)
+     * @param skills       Danh sách kỹ năng cách nhau dấu phẩy (match tất cả)
+     * @param city         Lọc theo thành phố (enum name, vd HA_NOI)
+     * @param isOpenToWork Lọc người sẵn sàng làm việc
+     * @param page         Trang (mặc định 0)
+     * @param size         Kích thước trang (mặc định 20)
+     */
+    @GetMapping("/search")
+    @PreAuthorize("hasRole('COMPANY')")
+    public ResponseEntity<APIResponse<PaginatedResult<CandidateSummaryResponse>>> searchCandidates(
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) String skills,
+            @RequestParam(required = false) String city,
+            @RequestParam(required = false) Boolean isOpenToWork,
+            @RequestParam(name = "page", defaultValue = "0") int page,
+            @RequestParam(name = "size", defaultValue = "20") int size
+    ) {
+        PaginatedResult<CandidateSummaryResponse> response = employeeService.searchCandidates(
+                search, skills, city, isOpenToWork, page, size
+        );
+        return ResponseEntity.ok(APIResponse.success(response));
+    }
+
+    /**
      * Xem public profile của Employee theo employeeId.
      * Public — ai cũng xem được (kể cả COMPANY).
      * Nếu employee set isPublic = false hoặc user bị ban → 404.
@@ -40,7 +71,6 @@ public class EmployeeController {
     }
 
     @GetMapping("/me")
-    @PreAuthorize("hasRole('USER')")
     public ResponseEntity<APIResponse<EmployeeResponse>> getMyProfile(
             @AuthenticationPrincipal CustomUserDetails userDetails
     ) {
@@ -53,7 +83,6 @@ public class EmployeeController {
      * Skills / Experiences / Education / Certificates có API riêng.
      */
     @PutMapping("/me")
-    @PreAuthorize("hasRole('USER')")
     public ResponseEntity<APIResponse<EmployeeResponse>> updateProfile(
             @Valid @RequestBody UpdateEmployeeRequest request,
             @AuthenticationPrincipal CustomUserDetails userDetails
@@ -67,7 +96,7 @@ public class EmployeeController {
      * Nhận multipart file, tự động xoá avatar cũ trên Cloudinary.
      */
     @PostMapping(value = "/me/avatar", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    @PreAuthorize("hasRole('USER')")
+    @PreAuthorize("isAuthenticated()")
     public ResponseEntity<APIResponse<EmployeeResponse>> uploadAvatar(
             @RequestParam("file") MultipartFile file,
             @AuthenticationPrincipal CustomUserDetails userDetails

@@ -71,21 +71,23 @@ public interface AuthService {
 
     /**
      * Đổi mật khẩu cho user hiện tại.
-     *
-     * @param userId       ID của user (từ JWT)
-     * @param oldPassword  Mật khẩu cũ — phải khớp với DB
-     * @param newPassword  Mật khẩu mới (min 8 ký tự)
-     */
-    /**
-     * Đổi mật khẩu cho user hiện tại.
      * <p>
      * Dùng {@link CustomUserDetails} có sẵn từ SecurityContext (đã load qua JwtAuthFilter)
      * để lấy password hash, tránh query DB lại.
+     * <p>
+     * Hành vi với {@code oldPassword} (user không có mật khẩu = password NULL,
+     * ví dụ user đăng nhập bằng Google):
+     * <ul>
+     *   <li>User CÓ password → bắt buộc nhập đúng oldPassword, sai (kể cả null/rỗng)
+     *       → INVALID_CREDENTIALS.</li>
+     *   <li>User KHÔNG có password (password = NULL) → BỎ QUA check oldPassword,
+     *       endpoint đóng vai trò "đặt mật khẩu lần đầu".</li>
+     * </ul>
      * Sau khi đổi thành công, thu hồi tất cả session của thiết bị khác
      * (trừ thiết bị đang thực hiện request) — buộc các thiết bị đó đăng nhập lại.
      *
      * @param userDetails  Thông tin user từ JWT (đã có password hash)
-     * @param oldPassword  Mật khẩu cũ — phải khớp với hash trong userDetails
+     * @param oldPassword  Mật khẩu cũ — chỉ bắt buộc khi user đã có password
      * @param newPassword  Mật khẩu mới (min 8 ký tự)
      * @param request      HttpServletRequest để lấy Bearer token (lấy current sessionId)
      */

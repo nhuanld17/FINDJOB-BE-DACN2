@@ -783,7 +783,8 @@ public class AuthServiceImplement implements AuthService {
                 user.getUsername(),
                 user.getRoles(),
                 newAccessToken,
-                newRefreshToken
+                newRefreshToken,
+                user.getPassword() != null
         );
     }
 
@@ -867,10 +868,19 @@ public class AuthServiceImplement implements AuthService {
     @Override
     @Transactional
     public void changePassword(CustomUserDetails userDetails, String oldPassword, String newPassword, HttpServletRequest request) {
-        // Kiểm tra mật khẩu cũ có đúng không — dùng password hash có sẵn từ SecurityContext
-        if (!passwordEncoder.matches(oldPassword, userDetails.getPassword())) {
-            throw new AppException(ErrorCode.INVALID_CREDENTIALS);
+
+        boolean hasPassword = (userDetails.getPassword() != null);
+
+        if (hasPassword) {
+            // User CÓ password (LOCAL / đã đặt mk trước đó) → bắt buộc nhập đúng mật khẩu cũ.
+            // Dùng password hash có sẵn từ SecurityContext, tránh query DB lại.
+            // Guard null: oldPassword null/rỗng → coi như sai, user LOCAL không được bỏ trống.
+            if (oldPassword == null || !passwordEncoder.matches(oldPassword, userDetails.getPassword())) {
+                throw new AppException(ErrorCode.INVALID_CREDENTIALS);
+            }
         }
+        // User KHÔNG có password (Google user, password = NULL) → BỎ QUA check oldPassword:
+        // endpoint này trở thành "đặt mật khẩu lần đầu" cho họ.
 
         // Cập nhật mật khẩu mới bằng JPQL update — ko load entity
         userRepository.updatePassword(userDetails.getId(), passwordEncoder.encode(newPassword));
@@ -980,7 +990,8 @@ public class AuthServiceImplement implements AuthService {
                 userDetails.getUsername(),
                 userDetails.getRoles(),
                 accessToken,
-                refreshToken
+                refreshToken,
+                userDetails.getPassword() != null
         );
     }
 
@@ -1045,7 +1056,7 @@ public class AuthServiceImplement implements AuthService {
             user.setUsername(generateUniqueUsername(email));
             user.setFullName(name);
             user.setAvatarUrl(picture);
-            user.setPassword(passwordEncoder.encode(UUID.randomUUID().toString()));
+            user.setPassword(null);
             user.setActive(true);
             user.setDeleted(false);
             user.setAuthProvider(AuthProvider.GOOGLE);

@@ -5,6 +5,8 @@ import com.example.boilerplate.common.constant.ErrorCode;
 import com.example.boilerplate.common.constant.JobStatus;
 
 import com.example.boilerplate.common.exception.AppException;
+import com.example.boilerplate.common.response.KeySetCursor;
+import com.example.boilerplate.common.response.KeysetPage;
 import com.example.boilerplate.common.response.PaginatedResult;
 import com.example.boilerplate.features.company.entity.Company;
 import com.example.boilerplate.features.company.repository.CompanyRepository;
@@ -32,6 +34,7 @@ import java.text.Normalizer;
 import java.time.LocalDate;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -132,7 +135,26 @@ public class JobService {
     public PaginatedResult<JobResponse> getJobsByCompany(Long companyId, String search, Pageable pageable) {
         Page<Job> page = jobRepository.findActiveJobsByCompany(
                 companyId, List.of(JobStatus.ACTIVE, JobStatus.EXPIRED), search, pageable);
-        return PaginatedResult.fromPage(page, this::toResponse);
+
+        // Load category cho từng job và tạo map 1 job id <--> list<categoryname>
+        Map<Long, List<String>> categoryMap = loadCategoryMapForJobs(page.getContent());
+
+        // Map bằng hàm toResponse 2 tham số
+        List<JobResponse> items = page.getContent().stream()
+                .map(job -> toResponse(job, categoryMap.getOrDefault(job.getId(), List.of())))
+                .toList();
+
+        return PaginatedResult.<JobResponse>builder()
+                .items(items)
+                .page(page.getNumber())
+                .pageSize(page.getSize())
+                .totalItems(page.getTotalElements())
+                .totalPages(page.getTotalPages())
+                .first(page.isFirst())
+                .last(page.isLast())
+                .hasNext(page.hasNext())
+                .hasPrevious(page.hasPrevious())
+                .build();
     }
 
     @Transactional(readOnly = true)
@@ -141,13 +163,110 @@ public class JobService {
             City city,
             String seniority,
             String jobType,
+            Long salaryMin,
+            Long salaryMax,
             Pageable pageable
     ) {
         // Public search: dùng QueryDSL — luôn filter isDeleted=false, status∈{ACTIVE,EXPIRED}
         // Bỏ qua mọi status override từ client vì lý do bảo mật
         // expired job vẫn hiện trong search để ứng viên có thể xem lại thông tin / lưu lại
-        Page<Job> page = jobQueryDSL.searchJobs(search, city, seniority, jobType, pageable);
-        return PaginatedResult.fromPage(page, this::toResponse);
+        Page<Job> page = jobQueryDSL.searchJobs(search, city, seniority, jobType, salaryMin, salaryMax, pageable);
+
+        // Load category cho từng job và tạo map 1 job id <--> list<categoryname>
+        Map<Long, List<String>> categoryMap = loadCategoryMapForJobs(page.getContent());
+
+        // Map bằng hàm toResponse 2 tham số
+        List<JobResponse> items = page.getContent().stream()
+                .map(job -> toResponse(job, categoryMap.getOrDefault(job.getId(), List.of())))
+                .toList();
+
+        return PaginatedResult.<JobResponse>builder()
+                .items(items)
+                .page(page.getNumber())
+                .pageSize(page.getSize())
+                .totalItems(page.getTotalElements())
+                .totalPages(page.getTotalPages())
+                .first(page.isFirst())
+                .last(page.isLast())
+                .hasNext(page.hasNext())
+                .hasPrevious(page.hasPrevious())
+                .build();
+    }
+
+    /**
+     * Liệt kê job cho COMPANY (chủ sở hữu) — KEYSET PAGINATION.
+     * <p>
+     * KHÁC với {@link #getJobsByCompany} (public — chỉ ACTIVE/EXPIRED):
+     * <ul>
+     *   <li>Lấy companyId từ userId (JWT) — client không tự chọn company được</li>
+     *   <li>Trả TẤT CẢ status nếu không truyền statuses</li>
+     *   <li>Phân trang bằng CURSOR (mốc) thay vì OFFSET — ổn định khi dữ liệu đổi</li>
+     *   <li>Luôn loại job đã xoá mềm</li>
+     * </ul>
+     *
+     * @param userId   ID user (từ JWT) — tìm công ty của họ
+     * @param statuses Danh sách status cần lọc (rỗng/null = tất cả)
+     * @param search   Từ khoá tìm theo title (optional)
+     * @param cursor   Mốc của item cuối đã đọc (null = trang đầu)
+     * @param size     Số item mỗi trang (mặc định 20)
+     * @return KeysetPage {@link JobResponse}
+     */
+    @Transactional(readOnly = true)
+    public KeysetPage<JobResponse> getMyJobs(
+            Long userId,
+            List<JobStatus> statuses,
+            String search,
+            String cursor,
+            int size)
+    {
+        // Tìm công ty của user hiện tại (chỉ owner mới quản lý được job)
+        Company company = companyRepository.findByOwnerId(userId)
+                .orElseThrow(() -> new AppException(ErrorCode.COMPANY_NOT_FOUND));
+
+        if (company.isDeleted()) {
+            throw new AppException(ErrorCode.COMPANY_NOT_FOUND);
+        }
+
+        // Giải mã cursor mã hóa -> cursor (createdAt, id). null -> là trang đầu
+        KeySetCursor.Cursor decodedCursor = KeySetCursor.decode(cursor);
+
+        List<Job> jobs = jobQueryDSL.searchManageJobs(
+                company.getId(), statuses, search,
+                decodedCursor != null ? decodedCursor.createdAt() : null,
+                decodedCursor != null ? decodedCursor.id() : null,
+                size
+        );
+
+        // Kiểm tra còn các item phía sau list job này ko
+        boolean hasMore = jobs.size() > size;
+
+        // Nếu sau listjob được lấy ra còn có các job khác ở phía sau
+        // lấy đúng size của list đó, nếu có ít hơn -> lấy tất cả job trong listjob
+        List<Job> pageJobs = hasMore ? jobs.subList(0, size) : jobs;
+
+        // nextCursor = mốc của item cuối trang này (chỉ khi còn trang sau)
+        String nextCursor = null;
+
+        // Nếu còn các job phía sau
+        if (hasMore && !pageJobs.isEmpty()) {
+            // Lấy ra job cuối cùng của kết quả query phía trên
+            Job last = pageJobs.getLast();
+
+            // tính toán mốc và encode cho mốc đó dựa trên createdAt và id
+            nextCursor = KeySetCursor.encode(last.getCreatedAt(), last.getId());
+        }
+
+        // Load categories cho cả trang bằng 1 query -> tránh N + 1 query
+        // Gom gết jobId của trang lại -> query 1 lần lấy job_categories + categoriey
+        // -> Nhóm theo jobId thành Map<jobId, List<categoryName>>
+        Map<Long, List<String>> categoryMap = loadCategoryMapForJobs(pageJobs);
+
+        // Map sang response - categoryNames lấy từ map, ko query lại từng job
+        List<JobResponse> items = pageJobs.stream()
+                .map(job -> toResponse(job, categoryMap.getOrDefault(job.getId(), List.of())))
+                .toList();
+
+        return KeysetPage.of(items, nextCursor, hasMore);
     }
 
     /**
@@ -249,6 +368,17 @@ public class JobService {
         return toResponse(job);
     }
 
+    // ==================== PUBLIC ENTITY ACCESS ====================
+
+    /**
+     * Lấy Job entity (raw) — dùng cho ATS service cần thông tin JD.
+     * CHỈ trả job chưa xoá mềm (không check status hay quyền sở hữu).
+     */
+    @Transactional(readOnly = true)
+    public Job getJobEntityById(Long jobId) {
+        return findJobOrThrow(jobId);
+    }
+
     // ==================== PRIVATE ====================
 
     private Job findJobOrThrow(Long jobId) {
@@ -282,13 +412,33 @@ public class JobService {
     }
 
     private JobResponse toResponse(Job job) {
-        Company company = job.getCompany();
 
         // Lấy category names
         List<String> categoryNames = jobCategoryRepository.findByJobId(job.getId())
                 .stream()
                 .map(jc -> jc.getCategory().getName())
-                .collect(Collectors.toList());
+                .toList();
+
+        return toResponse(job, categoryNames);
+    }
+
+    private Map<Long, List<String>> loadCategoryMapForJobs(List<Job> jobsList) {
+        // === Batch load categories cho cả trang
+        List<Long> jobIds = jobsList.stream().map(Job::getId).toList();
+
+        return jobCategoryRepository.findByJobIdInWithCategory(jobIds)
+                .stream()
+                .collect(
+                        Collectors.groupingBy(
+                                jobCategory -> jobCategory.getJob().getId(),
+                                Collectors.mapping(jobCategory -> jobCategory.getCategory().getName(),
+                                        Collectors.toList()
+                                ))
+                );
+    }
+
+    private JobResponse toResponse(Job job, List<String> categoryNames) {
+        Company company = job.getCompany();
 
         return JobResponse.builder()
                 .id(job.getId())

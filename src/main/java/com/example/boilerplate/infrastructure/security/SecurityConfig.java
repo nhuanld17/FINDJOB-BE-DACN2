@@ -66,6 +66,7 @@ public class SecurityConfig {
                                 .accessDeniedHandler(accessDeniedHandler))
 
                 .authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/api/v1/auth/change-password").authenticated()
                         .requestMatchers(PUBLIC_PATTERNS).permitAll()
                         .anyRequest().authenticated()
                 )

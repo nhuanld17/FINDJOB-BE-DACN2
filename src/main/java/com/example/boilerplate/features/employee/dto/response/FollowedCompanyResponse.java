@@ -14,6 +14,7 @@ public record FollowedCompanyResponse(
         String companySlug,
         String companyLogoUrl,
         String industry,
-        City city
+        City city,
+        long followerCount
 ) {
 }

@@ -33,14 +33,17 @@ public class FollowQueryDSL {
         QFollowedCompany followedCompany = QFollowedCompany.followedCompany;
         QCompany company = QCompany.company;
 
-        // ===== Predicate: filter theo employeeId =====
+        // ===== Predicate: filter theo employeeId + company chưa bị xoá mềm =====
         BooleanBuilder predicate = new BooleanBuilder();
         predicate.and(followedCompany.id.employeeId.eq(employeeId));
+        // Company bị soft-delete → ẩn khỏi danh sách follow (khớp hành vi findCompanyOrThrow)
+        predicate.and(company.deleted.isFalse());
 
         // ===== Đếm tổng số bản ghi =====
         Long total = queryFactory
                 .select(followedCompany.count())
                 .from(followedCompany)
+                .join(followedCompany.company, company)
                 .where(predicate)
                 .fetchOne();
 
@@ -51,10 +54,10 @@ public class FollowQueryDSL {
                         : followedCompany.followedAt.desc())
                 .collect(Collectors.toUnmodifiableList());
 
-        // ===== Lấy danh sách (fetch join company để tránh N+1) =====
+        // ===== Lấy danh sách (join + fetch join company để tránh N+1) =====
         List<FollowedCompany> content = queryFactory
                 .selectFrom(followedCompany)
-                .leftJoin(followedCompany.company, company).fetchJoin()
+                .join(followedCompany.company, company).fetchJoin()
                 .where(predicate)
                 .orderBy(orderSpecifiers.toArray(new OrderSpecifier[0]))
                 .offset(pageable.getOffset())

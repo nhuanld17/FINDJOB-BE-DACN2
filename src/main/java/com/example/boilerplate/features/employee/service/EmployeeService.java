@@ -2,19 +2,27 @@ package com.example.boilerplate.features.employee.service;
 
 import com.example.boilerplate.common.constant.ErrorCode;
 import com.example.boilerplate.common.exception.AppException;
+import com.example.boilerplate.common.response.PaginatedResult;
 import com.example.boilerplate.features.employee.dto.request.CertificateRequest;
 import com.example.boilerplate.features.employee.dto.request.EducationDto;
 import com.example.boilerplate.features.employee.dto.request.ExperienceDto;
 import com.example.boilerplate.features.employee.dto.request.UpdateEmployeeRequest;
+import com.example.boilerplate.features.employee.dto.response.CandidateSummaryResponse;
 import com.example.boilerplate.features.employee.dto.response.EmployeeResponse;
 import com.example.boilerplate.features.employee.entity.Certificate;
 import com.example.boilerplate.features.employee.entity.Employee;
+import com.example.boilerplate.features.employee.querydsl.EmployeeQueryDSL;
 import com.example.boilerplate.features.employee.repository.CertificateRepository;
 import com.example.boilerplate.features.employee.repository.EmployeeRepository;
+import com.example.boilerplate.features.user.entity.User;
 import com.example.boilerplate.features.user.repository.UserRepository;
 import com.example.boilerplate.infrastructure.cloudinary.CloudinaryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -34,14 +42,23 @@ public class EmployeeService {
     private final CertificateRepository certificateRepository;
     private final CloudinaryService cloudinaryService;
     private final UserRepository userRepository;
+    private final EmployeeQueryDSL employeeQueryDSL;
 
     /**
      * Lấy Employee Profile của user hiện tại (đầy đủ thông tin).
+     * Tự động tạo Employee record nếu chưa có (backfill cho migration V11 chưa chạy).
      */
-    @Transactional(readOnly = true)
+    @Transactional
     public EmployeeResponse getMyProfile(Long userId) {
         Employee employee = employeeRepository.findByUserId(userId)
-                .orElseThrow(() -> new AppException(ErrorCode.EMPLOYEE_NOT_FOUND));
+                .orElseGet(() -> {
+                    log.warn("Employee not found for userId={}, auto-creating...", userId);
+                    User user = userRepository.findById(userId)
+                            .orElseThrow(() -> new AppException(ErrorCode.EMPLOYEE_NOT_FOUND));
+                    Employee newEmployee = new Employee();
+                    newEmployee.setUser(user);
+                    return employeeRepository.save(newEmployee);
+                });
 
         List<Certificate> certificates = certificateRepository.findByEmployeeId(employee.getId());
 
@@ -72,6 +89,30 @@ public class EmployeeService {
         List<Certificate> certificates = certificateRepository.findByEmployeeId(employee.getId());
 
         return toResponse(employee, certificates);
+    }
+
+    /**
+     * Tìm kiếm ứng viên (dành cho COMPANY — nhà tuyển dụng).
+     * <p>
+     * - CHỈ trả hồ sơ CÔNG KHAI (isPublic = true) — tôn trọng quyền riêng tư
+     * - Loại user đã bị xoá mềm (ban)
+     * - search: tìm theo tên / chức danh / kỹ năng (containsIgnoreCase)
+     * - skills: chuỗi kỹ năng cách nhau dấu phẩy — match nếu chứa TẤT CẢ
+     * - city: lọc theo thành phố (enum name, vd HA_NOI)
+     * - isOpenToWork: lọc người đang sẵn sàng làm việc
+     * - Phân trang OFFSET, sort cố định updatedAt DESC (hồ sơ mới cập nhật trước)
+     *
+     * @return PaginatedResult {@link CandidateSummaryResponse}
+     */
+    @Transactional(readOnly = true)
+    public PaginatedResult<CandidateSummaryResponse> searchCandidates(
+            String search, String skills, String city, Boolean isOpenToWork, int page, int size
+    ) {
+        Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "updatedAt"));
+        Page<CandidateSummaryResponse> candidatePage = employeeQueryDSL.searchCandidates(
+                search, skills, city, isOpenToWork, pageable
+        );
+        return PaginatedResult.fromPage(candidatePage);
     }
 
     /**

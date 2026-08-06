@@ -8,6 +8,6 @@ Chạy sonar
   "-Dsonar.host.url=http://localhost:9000" `
   "-Dsonar.token=sqp_7c827e989790cbae4b55f495b4707c29815dd865"
 
-Set path java tạm thời cho powershell hiện tại của prject:
+Set path java tạm thời cho powershell hiện tại của project:
 $env:JAVA_HOME="C:\Program Files\Java\jdk-21"
 $env:Path="$env:JAVA_HOME\bin;$env:Path"

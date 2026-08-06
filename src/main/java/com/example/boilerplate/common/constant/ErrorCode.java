@@ -90,6 +90,12 @@ public enum ErrorCode {
     // ===== Notification =====
     NOTIFICATION_NOT_FOUND(2028, "Notification not found", HttpStatus.NOT_FOUND),
 
+    // ===== ATS =====
+    ATS_CV_EMPTY(2041, "CV is empty or unreadable — only text-based PDF/DOCX are supported", HttpStatus.BAD_REQUEST),
+    ATS_CV_TOO_LARGE(2042, "CV exceeds maximum allowed size", HttpStatus.BAD_REQUEST),
+    ATS_PROVIDER_ERROR(2043, "AI scoring service is temporarily unavailable, please try again later", HttpStatus.SERVICE_UNAVAILABLE),
+    ATS_MISSING_INPUT(2044, "Either jobId or jdText must be provided", HttpStatus.BAD_REQUEST),
+
     // ===== System =====
     INTERNAL_ERROR(9999, "Internal server error", HttpStatus.INTERNAL_SERVER_ERROR),
     ;
