@@ -5,7 +5,7 @@ import jakarta.validation.constraints.NotBlank;
 
 /**
  * DTO cho mobile gửi Google accessToken lên backend.
- * <p>
+ * 
  * Mobile dùng expo-auth-session (PKCE) để lấy accessToken từ Google,
  * sau đó gửi lên backend để exchange lấy JWT của ứng dụng.
  * Backend verify token với Google API, tìm/tạo user, trả về JWT.

@@ -10,7 +10,7 @@ import java.time.Instant;
 
 /**
  * Đánh giá của Employee về Company.
- * <p>
+ * 
  * Mỗi employee chỉ được đánh giá 1 lần cho 1 công ty (unique constraint ở DB + application layer).
  */
 @Getter

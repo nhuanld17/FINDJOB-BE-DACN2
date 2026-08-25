@@ -345,9 +345,9 @@ public class CompanyService {
 
     /**
      * Tạo slug từ tên công ty (dùng cho URL).
-     * <p>
+     * 
      * Quy trình từng bước — ví dụ với input {@code "Công ty TNHH!!!"}:
-     * <pre>
+     * 
      *  1. NFD normalize  → "Công ty TNHH!!!"   (tách chữ và dấu ra riêng)
      *  2. Xoá dấu        → "Cong ty TNHH!!!"    (bỏ các dấu sắc/huyền/ngã...)
      *  3. Lowercase + đ→d→ "cong ty tnhh!!!"    (về chữ thường, đ → d)
@@ -355,7 +355,7 @@ public class CompanyService {
      *  5. Xoá ký tự lạ  → "cong-ty-tnhh"       (chỉ giữ a-z, 0-9 và dấu gạch)
      *  6. Gộp --        → "cong-ty-tnhh"       (nếu có -- thì thành -)
      *  7. Xoá - đầu/cuối→ "cong-ty-tnhh"       (không để - ở đầu hay cuối)
-     * </pre>
+     * 
      *
      * @param name tên công ty (có thể có tiếng Việt, ký tự đặc biệt, ...)
      * @return slug URL-friendly, VD: "Công ty TNHH ABC" → "cong-ty-tnhh-abc"

@@ -71,18 +71,18 @@ public interface AuthService {
 
     /**
      * Đổi mật khẩu cho user hiện tại.
-     * <p>
+     * 
      * Dùng {@link CustomUserDetails} có sẵn từ SecurityContext (đã load qua JwtAuthFilter)
      * để lấy password hash, tránh query DB lại.
-     * <p>
+     * 
      * Hành vi với {@code oldPassword} (user không có mật khẩu = password NULL,
      * ví dụ user đăng nhập bằng Google):
-     * <ul>
-     *   <li>User CÓ password → bắt buộc nhập đúng oldPassword, sai (kể cả null/rỗng)
-     *       → INVALID_CREDENTIALS.</li>
-     *   <li>User KHÔNG có password (password = NULL) → BỎ QUA check oldPassword,
-     *       endpoint đóng vai trò "đặt mật khẩu lần đầu".</li>
-     * </ul>
+     * 
+     *   - User CÓ password → bắt buộc nhập đúng oldPassword, sai (kể cả null/rỗng)
+     *       → INVALID_CREDENTIALS.
+     *   - User KHÔNG có password (password = NULL) → BỎ QUA check oldPassword,
+     *       endpoint đóng vai trò "đặt mật khẩu lần đầu".
+     * 
      * Sau khi đổi thành công, thu hồi tất cả session của thiết bị khác
      * (trừ thiết bị đang thực hiện request) — buộc các thiết bị đó đăng nhập lại.
      *

@@ -195,14 +195,14 @@ public class JobService {
 
     /**
      * Liệt kê job cho COMPANY (chủ sở hữu) — KEYSET PAGINATION.
-     * <p>
+     * 
      * KHÁC với {@link #getJobsByCompany} (public — chỉ ACTIVE/EXPIRED):
-     * <ul>
-     *   <li>Lấy companyId từ userId (JWT) — client không tự chọn company được</li>
-     *   <li>Trả TẤT CẢ status nếu không truyền statuses</li>
-     *   <li>Phân trang bằng CURSOR (mốc) thay vì OFFSET — ổn định khi dữ liệu đổi</li>
-     *   <li>Luôn loại job đã xoá mềm</li>
-     * </ul>
+     * 
+     *   - Lấy companyId từ userId (JWT) — client không tự chọn company được
+     *   - Trả TẤT CẢ status nếu không truyền statuses
+     *   - Phân trang bằng CURSOR (mốc) thay vì OFFSET — ổn định khi dữ liệu đổi
+     *   - Luôn loại job đã xoá mềm
+     * 
      *
      * @param userId   ID user (từ JWT) — tìm công ty của họ
      * @param statuses Danh sách status cần lọc (rỗng/null = tất cả)

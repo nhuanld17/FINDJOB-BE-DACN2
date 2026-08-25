@@ -55,7 +55,7 @@ public class EmailService {
 
     /**
      * Gửi email thông báo hồ sơ ĐƯỢC DUYỆT (ACCEPTED) cho ứng viên.
-     * <p>
+     * 
      * Chạy async trên virtual thread (emailTaskExecutor) — không chặn API trả response.
      * Email fail không ảnh hưởng đến việc đổi status (thread riêng, không trong transaction).
      *
@@ -78,7 +78,7 @@ public class EmailService {
 
     /**
      * Gửi email thông báo hồ sơ BỊ TỪ CHỐI (REJECTED) cho ứng viên, kèm lý do từ chối.
-     * <p>
+     * 
      * Chạy async trên virtual thread (emailTaskExecutor) — không chặn API trả response.
      * Email fail không ảnh hưởng đến việc đổi status (thread riêng, không trong transaction).
      *

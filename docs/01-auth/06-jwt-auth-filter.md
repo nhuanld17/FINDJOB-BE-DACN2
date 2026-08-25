@@ -167,10 +167,10 @@ session tồn tại → status ACTIVE → user DB → hợp lệ) nhưng có **3
 
 | | `JwtAuthFilter` (Access Token) | `refreshToken()` (Refresh Token) |
 |---|---|---|
-| **So khớp "bản hiện hành"** | Không có — AT không được rotate, không có field `accessJtiCurrent` nào để so | **Có** — so `jti` với `session.refreshJtiCurrent` → nền tảng reuse-detection (`3013`) |
+| **So khớp "bản hiện hành"** | Không có — AT không được rotate, không có field `accessJtiCurrent` nào để so | **Có** — so `jti` với `session.currentRefreshJti` → nền tảng reuse-detection (`3013`) |
 | **Check thiết bị** | **Có** — so `deviceId` claim với `session.deviceId` (`3016` nếu lệch) | **Không** — `refreshToken()` không kiểm `deviceId` |
 | **Khi thiếu token / thiếu cookie** | **Bỏ qua filter** (không lỗi ngay, để `authorizeHttpRequests` tự chặn ở tầng sau → 401 không `code`) | **Ném lỗi ngay** (`3009 UNAUTHORIZED`, có `code`, kèm xóa cookie) |
-| **Tác dụng phụ khi hợp lệ** | Cập nhật `lastSeen` | Cập nhật `lastSeen` **+** rotate `refreshJtiCurrent` (cấp AT/RT mới) |
+| **Tác dụng phụ khi hợp lệ** | Cập nhật `lastSeen` | Cập nhật `lastSeen` **+** rotate `currentRefreshJti` (cấp AT/RT mới) |
 | **Vòng lặp bao nhiêu request** | Chạy lại **mỗi request** có Bearer token | Chỉ chạy khi FE **chủ động** gọi (thường là khi AT hết hạn) |
 
 > **Vì sao AT không cần reuse-detection?** Vì AT không rotate theo cơ chế "1 bản hiện hành duy
@@ -183,7 +183,7 @@ session tồn tại → status ACTIVE → user DB → hợp lệ) nhưng có **3
 > trong code hiện tại — `JwtAuthFilter` so `deviceId` claim với session (`3016` nếu lệch), nhưng
 > `refreshToken()` **không** làm việc này dù RT cũng mang claim `deviceId`. Về lý thuyết, RT bị
 > đánh cắp và refresh từ thiết bị khác vẫn có thể qua được guard chain của `/refresh-token` nếu
-> `jti` vẫn khớp `refreshJtiCurrent` (tức là chưa bị rotate bởi ai khác) — chỉ AT mới cấp ra từ đó
+> `jti` vẫn khớp `currentRefreshJti` (tức là chưa bị rotate bởi ai khác) — chỉ AT mới cấp ra từ đó
 > mới bị chặn bởi filter khi request tiếp theo tới do device mismatch. Đây là điểm nên cân nhắc
 > bổ sung nếu muốn khóa chặt hơn theo thiết bị ngay tại tầng refresh.
 

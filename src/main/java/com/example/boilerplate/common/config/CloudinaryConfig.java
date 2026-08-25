@@ -11,21 +11,19 @@ import java.util.Map;
 /**
  * Cấu hình Cloudinary SDK dùng để upload file (logo, cover, avatar, ...).
  *
- * <p>Thông tin lấy từ env:
- * <ul>
- *   <li>{@code CLOUDINARY_CLOUD_NAME} — tên cloud trên Cloudinary</li>
- *   <li>{@code CLOUDINARY_API_KEY} — API Key từ Dashboard</li>
- *   <li>{@code CLOUDINARY_API_SECRET} — API Secret từ Dashboard</li>
- * </ul>
+ * Thông tin lấy từ env:
+ * 
+ *   - {@code CLOUDINARY_CLOUD_NAME} — tên cloud trên Cloudinary
+ *   - {@code CLOUDINARY_API_KEY} — API Key từ Dashboard
+ *   - {@code CLOUDINARY_API_SECRET} — API Secret từ Dashboard
+ * 
  *
- * <p>Usage:
- * <pre>{@code
- * @Autowired
- * private Cloudinary cloudinary;
+ * Usage:
+ *   @Autowired
+ *   private Cloudinary cloudinary;
  *
- * Map<?, ?> result = cloudinary.uploader().upload(file.getBytes(), ObjectUtils.emptyMap());
- * String url = result.get("url").toString();
- * }</pre>
+ *   Map<?, ?> result = cloudinary.uploader().upload(file.getBytes(), ObjectUtils.emptyMap());
+ *   String url = result.get("url").toString();
  */
 @Configuration
 public class CloudinaryConfig {

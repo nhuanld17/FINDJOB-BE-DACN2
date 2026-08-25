@@ -114,14 +114,14 @@ public class JobController {
 
     /**
      * Liệt kê job dành cho COMPANY (chủ sở hữu) — KEYSET PAGINATION.
-     * <p>
+     * 
      * KHÁC với GET /company/{companyId} (public — chỉ ACTIVE/EXPIRED):
-     * <ul>
-     *   <li>Chỉ COMPANY gọi được (JWT), lấy companyId từ userId</li>
-     *   <li>Trả TẤT CẢ status (ACTIVE/EXPIRED/DRAFT/CLOSED) nếu không truyền {@code status}</li>
-     *   <li>Lọc theo MỘT HOẶC NHIỀU status: {@code status=ACTIVE,DRAFT}</li>
-     *   <li>Phân trang bằng {@code cursor} (mốc item cuối) thay vì page — keyset</li>
-     * </ul>
+     * 
+     *   - Chỉ COMPANY gọi được (JWT), lấy companyId từ userId
+     *   - Trả TẤT CẢ status (ACTIVE/EXPIRED/DRAFT/CLOSED) nếu không truyền {@code status}
+     *   - Lọc theo MỘT HOẶC NHIỀU status: {@code status=ACTIVE,DRAFT}
+     *   - Phân trang bằng {@code cursor} (mốc item cuối) thay vì page — keyset
+     * 
      * Search theo title, sort CỐ ĐỊNH created_at DESC (mới nhất lên đầu).
      */
     @GetMapping("/manage")
@@ -178,7 +178,7 @@ public class JobController {
      * Tìm kiếm job — Public.
      * Trả về các job ACTIVE hoặc EXPIRED, chưa bị xoá.
      * Các tham số filter (city, seniority, jobType, salaryMin, salaryMax) đều optional.
-     * <p>
+     * 
      * {@code sort} — cú pháp {@code field,direction} (vd {@code salaryMax,desc}).
      * Field phải nằm trong WHITELIST (xem JobQueryDSL.buildOrderSpecifiers):
      * title, createdAt, updatedAt, salaryMin, salaryMax, expiryDate, city,

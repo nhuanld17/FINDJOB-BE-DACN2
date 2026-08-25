@@ -16,9 +16,9 @@ import org.springframework.web.multipart.MultipartFile;
 
 /**
  * Controller cho ATS Resume Scoring (chỉ role USER).
- * <p>
+ * 
  * Endpoint: POST /api/v1/ats/scan
- * <p>
+ * 
  * Cho phép USER upload CV PDF/DOCX, kèm jobId (lấy JD từ DB) hoặc
  * jdText (tự paste) để AI chấm độ khớp.
  */

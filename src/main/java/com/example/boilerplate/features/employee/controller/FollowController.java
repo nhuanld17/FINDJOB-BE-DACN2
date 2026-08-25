@@ -18,7 +18,7 @@ import java.util.Map;
 
 /**
  * Controller cho follow/unfollow company.
- * <p>
+ * 
  * Chỉ user có role USER (người xin việc) mới có thể follow.
  */
 @RestController

@@ -29,40 +29,35 @@ import java.util.Map;
 
 
 /**
- * <h2>CustomOidcUserService — Xử lý user sau khi Google xác thực OIDC</h2>
+ * CustomOidcUserService — Xử lý user sau khi Google xác thực OIDC
  *
- * <h3>Vai trò:</h3>
- * Đây là class <b>quan trọng nhất</b> trong flow OIDC.
+ * Vai trò:
+ * Đây là class quan trọng nhất trong flow OIDC.
  * Sau khi Google xác thực user thành công và trả về ID token,
  * Spring Security gọi {@link #loadUser(OidcUserRequest)} để:
- * <ol>
- *   <li>Gọi Google UserInfo endpoint lấy thông tin user (email, name, picture, sub…)</li>
- *   <li><b>Tìm user trong DB local</b> theo email</li>
- *   <li>
- *      <b>Phân nhánh:</b>
- *      <ul>
- *        <li>Chưa có → <b>Tạo mới</b> user + Employee profile</li>
- *        <li>Đã có → <b>Link Google account</b> + kích hoạt nếu đang inactive</li>
- *      </ul>
- *   </li>
- *   <li>Trả về {@link CustomOidcUser} chứa {@code userId} local để {@link OidcLoginSuccessHandler} tạo JWT</li>
- * </ol>
+ * 
+ *   - Gọi Google UserInfo endpoint lấy thông tin user (email, name, picture, sub…)
+ *   - Tìm user trong DB local theo email:
+ *       - Chưa có → Tạo mới user + Employee profile
+ *       - Đã có → Link Google account + kích hoạt nếu đang inactive
+ *   - Trả về {@link CustomOidcUser} chứa {@code userId} local để {@link OidcLoginSuccessHandler} tạo JWT
+ * 
  *
- * <h3>Vấn đề class này giải quyết:</h3>
- * <ul>
- *   <li><b>Auto-register:</b> User đăng nhập Google lần đầu → tự tạo tài khoản (không cần form đăng ký)</li>
- *   <li><b>Link tài khoản:</b> User đã đăng ký bằng email/password trước đó → đăng nhập Google bằng cùng email
- *       → link Google account vào tài khoản hiện tại (thêm {@code socialId})</li>
- *   <li><b>Auto-activate:</b> User đã register bằng email/password nhưng chưa verify OTP
- *       → Google đã verify email → auto active user</li>
- *   <li><b>Xử lý pending intent:</b> User đăng ký EMPLOYER form bằng email/password, chưa xong OTP
- *       → Google login xong → tạo Company cho user luôn (không cần verify OTP lại)</li>
- *   <li><b>Tách biệt network DB:</b> Gọi {@code super.loadUser()} (HTTP đến Google) → xong mới chạy DB
- *       (không giữ connection pool chờ network)</li>
- * </ul>
+ * Vấn đề class này giải quyết:
+ * 
+ *   - Auto-register: User đăng nhập Google lần đầu → tự tạo tài khoản (không cần form đăng ký)
+ *   - Link tài khoản: User đã đăng ký bằng email/password trước đó → đăng nhập Google bằng cùng email
+ *       → link Google account vào tài khoản hiện tại (thêm {@code socialId})
+ *   - Auto-activate: User đã register bằng email/password nhưng chưa verify OTP
+ *       → Google đã verify email → auto active user
+ *   - Xử lý pending intent: User đăng ký EMPLOYER form bằng email/password, chưa xong OTP
+ *       → Google login xong → tạo Company cho user luôn (không cần verify OTP lại)
+ *   - Tách biệt network DB: Gọi {@code super.loadUser()} (HTTP đến Google) → xong mới chạy DB
+ *       (không giữ connection pool chờ network)
+ * 
  *
- * <h3>Luồng chi tiết (loadUser):</h3>
- * <pre>
+ * Luồng chi tiết (loadUser):
+ * 
  * 1. super.loadUser() → Gọi Google UserInfo, lấy claims
  * 2. Kiểm tra email_verified = true (thiếu check này = lỗ hổng account-takeover)
  * 3. Tìm user trong DB theo email (lowercase + trim khớp với local flow)
@@ -87,17 +82,17 @@ import java.util.Map;
  *          │     └── log "Activated inactive user via OIDC"
  *          ├── Link Google (socialId, avatar nếu thiếu)
  *          └── → Trả về CustomOidcUser
- * </pre>
+ * 
  *
- * <h3>Lưu ý bảo mật:</h3>
- * <ul>
- *   <li>Check {@code email_verified} trước — nếu không, attacker tạo Gmail chưa verify
- *       → login được vào victim account (account-takeover)</li>
- *   <li>KHÔNG ghi đè {@code authProvider = LOCAL} — nếu user đã đăng ký bằng password trước,
- *       vẫn giữ LOCAL để không mất khả năng login bằng password</li>
- *   <li>password = NULL — user Google chưa có mật khẩu, đặt lần đầu qua change-password
- *       (không ai login bằng email/password được cho đến khi đặt)</li>
- * </ul>
+ * Lưu ý bảo mật:
+ * 
+ *   - Check {@code email_verified} trước — nếu không, attacker tạo Gmail chưa verify
+ *       → login được vào victim account (account-takeover)
+ *   - KHÔNG ghi đè {@code authProvider = LOCAL} — nếu user đã đăng ký bằng password trước,
+ *       vẫn giữ LOCAL để không mất khả năng login bằng password
+ *   - password = NULL — user Google chưa có mật khẩu, đặt lần đầu qua change-password
+ *       (không ai login bằng email/password được cho đến khi đặt)
+ * 
  *
  * @see OidcUserService
  * @see CustomOidcUser
@@ -120,7 +115,6 @@ public class CustomOidcUserService extends OidcUserService {
         // 1. super.loadUser() lấy OidcUser từ Google (ID token + UserInfo)
         // KHÔNG @Transactional ở đây: super.loadUser() gọi HTTP tới Google,
         //   giữ DB connection suốt network I/O là anti-pattern.
-        //   Phần DB (find/create/link user) sẽ được thực hiện riêng.
         OidcUser oidcUser = super.loadUser(userRequest);
         Map<String,Object> claims = oidcUser.getClaims();
 
@@ -142,8 +136,6 @@ public class CustomOidcUserService extends OidcUserService {
         log.info("OIDC login attempt: email={}, provider=GOOGLE, sub={}", email, sub);
 
         // 3. Kiểm tra email_verified trước khi link
-        // Thiếu check này = lỗ hổng account-takeover: attacker có thể tạo Google account
-        // với email chưa verify → link vào victim account.
         if (!Boolean.TRUE.equals(emailVerified)) {
             throw new OAuth2AuthenticationException(
                     new OAuth2Error("email_not_verified",

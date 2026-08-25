@@ -27,8 +27,10 @@ import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
 
+/**
+ * @EnableMethodSecurity: Nó bật Method Security — tức là cho phép bạn bảo vệ từng method bằng annotation.
+ */
 @Configuration
-@EnableWebSecurity
 @EnableMethodSecurity
 @RequiredArgsConstructor
 public class SecurityConfig {
@@ -90,15 +92,15 @@ public class SecurityConfig {
     /**
      * Tạo {@link DefaultOAuth2AuthorizationRequestResolver} với PKCE (Proof Key for Code Exchange).
      *
-     * <p>PKCE thêm {@code code_challenge} + {@code code_challenge_method=S256} vào authorization
+     * PKCE thêm {@code code_challenge} + {@code code_challenge_method=S256} vào authorization
      * request gửi lên Google, và lưu {@code code_verifier} trong attributes của
      * {@code OAuth2AuthorizationRequest}. Khi Google gửi callback, Spring Security tự động
      * dùng {@code code_verifier} để exchange authorization code lấy token.
      *
-     * <p>Mặc dù backend là confidential client (đã có {@code client_secret}), PKCE vẫn là
+     * Mặc dù backend là confidential client (đã có {@code client_secret}), PKCE vẫn là
      * best practice — bảo vệ authorization code ngay cả khi secret bị leak.
      *
-     * <p>code_verifier được lưu trong {@code OAuth2AuthorizationRequest.attributes} (String),
+     * code_verifier được lưu trong {@code OAuth2AuthorizationRequest.attributes} (String),
      * do đó JDK serialization qua Redis vẫn hoạt động bình thường.
      */
     private DefaultOAuth2AuthorizationRequestResolver pkceResolver(

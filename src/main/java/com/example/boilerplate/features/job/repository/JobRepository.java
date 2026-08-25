@@ -143,7 +143,7 @@ public interface JobRepository extends JpaRepository<Job, Long> {
 
     /**
      * Lấy danh sách job có trạng thái nhất định và hết hạn trước một ngày cụ thể
-     * <p>
+     * 
      * Thường được dùng để tự động cập nhật trạng thái job hết hạn (cron job / scheduler).
      *
      * @param status trạng thái job hiện tại
@@ -154,7 +154,7 @@ public interface JobRepository extends JpaRepository<Job, Long> {
 
     /**
      * Tìm kiếm job bằng full-text search trên PostgreSQL.
-     * <p>
+     * 
      * Sử dụng {@code to_tsvector / plainto_tsquery} để tìm kiếm theo title, description và requirements.
      * Kết quả được sắp xếp theo độ liên quan ({@code ts_rank}) giảm dần.
      * Chỉ lấy các job chưa bị xoá mềm ({@code is_deleted = false}), có status ACTIVE hoặc EXPIRED.

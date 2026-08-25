@@ -24,7 +24,7 @@ import java.util.stream.Collectors;
 
 /**
  * Service xử lý follow/unfollow company.
- * <p>
+ * 
  * Chỉ employee (người xin việc) mới có thể follow company.
  * Mỗi employee chỉ follow 1 company tối đa 1 lần.
  */

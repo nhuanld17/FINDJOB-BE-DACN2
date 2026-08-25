@@ -30,7 +30,15 @@ public interface ReviewRepository extends JpaRepository<Review, Long> {
             """)
     Page<Review> findByCompanyIdWithEmployee(@Param("companyId") Long companyId, Pageable pageable);
 
-    /** Phân bố rating: đếm số lượng review theo từng sao */
+    /**
+     * Phân bố rating: đếm số lượng review theo từng mức sao.
+     *
+     * OUTPUT — List<Object[]>, mỗi phần tử là 1 mảng 2 ô ứng với 1 mức sao:
+     *   row[0] = rating (Integer, giá trị 1..5) — mức sao
+     *   row[1] = count   (Long)                 — số review ở mức sao đó
+     *
+     * Ví dụ: [[5, 40L], [3, 10L], [1, 2L]] nghĩa là 40 review 5 sao, 10 review 3 sao, 2 review 1 sao.
+     */
     @Query("SELECT r.rating, COUNT(r) FROM Review r WHERE r.company.id = :companyId GROUP BY r.rating")
     List<Object[]> countByRatingGroupByCompanyId(@Param("companyId") Long companyId);
 

@@ -29,26 +29,26 @@ import java.util.Locale;
 
 /**
  * JobDataSeeder — CommandLineRunner seed dữ liệu JOB để test (dev).
- * <p>
+ * 
  * Chạy MỘT LẦN mỗi lần khởi động app. IDEMPOTENT: chỉ seed cho công ty nào
  * CHƯA có job nào (công ty đã có job → bỏ qua, không tạo trùng).
- * <p>
+ * 
  * Mục đích chính: tạo đủ dữ liệu để test KEYSET PAGINATION trên màn hình
  * "Quản lý tin tuyển dụng" (GET /api/v1/jobs/manage):
- * <ul>
- *   <li>Seed {@code per-company} job (mặc định 45 — lớn hơn size=20 để cuộn load nhiều trang)</li>
- *   <li>Trộn đủ 4 trạng thái ACTIVE/EXPIRED/DRAFT/CLOSED → test bộ lọc status</li>
- *   <li>created_at được backdate dàn đều (mỗi job cách nhau 1 giờ) → test thứ tự keyset</li>
- *   <li>Gắn job_categories (lấy từ bảng categories đã seed ở V10)</li>
- * </ul>
- * <p>
+ * 
+ *   - Seed {@code per-company} job (mặc định 45 — lớn hơn size=20 để cuộn load nhiều trang)
+ *   - Trộn đủ 4 trạng thái ACTIVE/EXPIRED/DRAFT/CLOSED → test bộ lọc status
+ *   - created_at được backdate dàn đều (mỗi job cách nhau 1 giờ) → test thứ tự keyset
+ *   - Gắn job_categories (lấy từ bảng categories đã seed ở V10)
+ * 
+ * 
  * Điều khiển bằng properties (application.yml):
- * <pre>
+ * 
  * app:
  *   seed-jobs:
  *     enabled: true        # bật/tắt seeder
  *     per-company: 45      # số job seed cho mỗi công ty chưa có job
- * </pre>
+ * 
  */
 @Slf4j
 @Component

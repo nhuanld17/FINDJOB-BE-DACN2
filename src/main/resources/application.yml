@@ -1,10 +1,16 @@
 server:
+  # Khi chạy sau reverse proxy (Nginx/Cloudflare): proxy chèn header X-Forwarded-Proto/Host
+  # để Spring biết scheme/host thật của client. 'framework' = Spring tự đọc các header này.
+  # BẮT BUỘC vì OAuth2 redirect-uri dùng "{baseUrl}" (tính động từ request) -
+  # không có config này sẽ tính ra http:// (sai), Google báo redirect_uri_mismatch.
   forward-headers-strategy: framework
 
 spring:
   servlet:
     multipart:
+      # kích thước tối đa của 1 file upload
       max-file-size: 10MB
+      # kích thước tối đa của 1 request multipart/form-data
       max-request-size: 10MB
 
   application:
@@ -24,13 +30,13 @@ spring:
       pool-name: FindJobPool
       # Tối đa 10 connections đồng thời (phù hợp với ứng dụng vừa)
       maximum-pool-size: 10
-      # Luôn giữ 2 connections sẵn sàng để tránh latency
+      # Luôn giữ 2 connections sẵn sàng
       minimum-idle: 2
       # 30 giây timeout nếu không lấy được connection khả dụng
       connection-timeout: 30000
       # Connection chết nếu idle quá 5 phút (giải phóng tài nguyên)
       idle-timeout: 300000
-      # Connection tối đa sống 30 phút (tránh connection leak)
+      # Connection tối đa sống 30 phút
       max-lifetime: 1800000
       # Câu lệnh test connection trước khi dùng
       connection-test-query: SELECT 1
@@ -100,7 +106,7 @@ spring:
       api-key: ${GROQ_API_KEY:}
       chat:
         options:
-          model: llama-3.3-70b-versatile
+          model: openai/gpt-oss-120b
           temperature: 0.1
 
 jwt:
@@ -110,10 +116,10 @@ jwt:
 
 app:
   oauth2:
-    # Fix #10: Default :5173 (Vite dev server) — khớp CorsConfig
+    # khớp CorsConfig
     redirect-url: ${APP_OAUTH2_REDIRECT_URL:http://localhost:5173/oauth-callback}
     # Danh sách scheme mobile được phép nhận redirect kèm ticket, phân cách bằng dấu phẩy.
-    # Production CHỈ có findjob://. exp:// là scheme của Expo Go — CHỈ bật khi dev.
+    # Production CHỈ có findjob://. exp:// là scheme của Expo Go
     allowed-mobile-schemes: ${APP_OAUTH2_ALLOWED_MOBILE_SCHEMES:findjob://}
 
   # ===== Seed dữ liệu job (chỉ dùng khi dev/test) =====

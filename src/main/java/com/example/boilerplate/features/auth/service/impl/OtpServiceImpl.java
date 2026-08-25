@@ -1,5 +1,7 @@
 package com.example.boilerplate.features.auth.service.impl;
 
+import com.example.boilerplate.common.constant.OtpConstant;
+import com.example.boilerplate.common.constant.PendingTokenConstant;
 import com.example.boilerplate.features.auth.service.OtpService;
 import com.example.boilerplate.infrastructure.redis.RedisService;
 import lombok.AllArgsConstructor;
@@ -78,8 +80,6 @@ public class OtpServiceImpl implements OtpService {
 
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
 
-    // ───────────────────────── Generate ──────────────────────────────────
-
     /**
      * Tạo mã OTP 6 số ngẫu nhiên dùng SecureRandom (cryptographically secure).
      * Luôn trả về đúng 6 chữ số, padding "0" ở đầu nếu cần.
@@ -91,8 +91,6 @@ public class OtpServiceImpl implements OtpService {
         return String.format("%06d", code);
     }
 
-    // ───────────────────────── Save / Get ────────────────────────────────
-
     /**
      * Lưu mã OTP vào Redis với TTL 5 phút.
      * Key: otp:{userId}. Ghi đè OTP cũ nếu đã tồn tại.
@@ -100,7 +98,7 @@ public class OtpServiceImpl implements OtpService {
     @Override
     public void saveOtp(Long userId, String otp) {
         redisTemplate.opsForValue().set(
-                "otp:" + userId, otp,
+                OtpConstant.PREFIX + userId, otp,
                 OTP_TTL_SECONDS, TimeUnit.SECONDS
         );
     }
@@ -111,7 +109,7 @@ public class OtpServiceImpl implements OtpService {
      */
     @Override
     public String getOtp(Long userId) {
-        return redisTemplate.opsForValue().get("otp:" + userId);
+        return redisTemplate.opsForValue().get(OtpConstant.PREFIX + userId);
     }
 
     /**
@@ -120,10 +118,8 @@ public class OtpServiceImpl implements OtpService {
      */
     @Override
     public void deleteOtp(Long userId) {
-        redisTemplate.delete("otp:" + userId);
+        redisTemplate.delete(OtpConstant.PREFIX + userId);
     }
-
-    // ───────────────────────── Cooldown ──────────────────────────────────
 
     /**
      * Đặt cooldown 60 giây chống resend OTP liên tục.
@@ -132,7 +128,7 @@ public class OtpServiceImpl implements OtpService {
     @Override
     public void setCooldown(Long userId) {
         redisTemplate.opsForValue().set(
-                "otp:cooldown:" + userId, "1",
+                OtpConstant.COOLDOWN_PREFIX + userId, "1",
                 COOLDOWN_SECONDS, TimeUnit.SECONDS
         );
     }
@@ -143,11 +139,9 @@ public class OtpServiceImpl implements OtpService {
      */
     @Override
     public long getCooldownTtl(Long userId) {
-        Long ttl = redisTemplate.getExpire("otp:cooldown:" + userId, TimeUnit.SECONDS);
+        Long ttl = redisTemplate.getExpire(OtpConstant.COOLDOWN_PREFIX + userId, TimeUnit.SECONDS);
         return ttl != null ? ttl : -2L;
     }
-
-    // ───────────────────────── Attempts ──────────────────────────────────
 
     /**
      * Tăng số lần gửi OTP theo cơ chế fixed-window 1 giờ.
@@ -157,7 +151,7 @@ public class OtpServiceImpl implements OtpService {
      */
     @Override
     public long incrementAttempts(Long userId) {
-        String key = "otp:attempts:" + userId;
+        String key = OtpConstant.ATTEMPTS_PREFIX + userId;
 
         // Dùng lệnh INCR của redis:
         // Nếu key chưa tồn tại, redis tự tạo key với giá trị là 1
@@ -175,7 +169,7 @@ public class OtpServiceImpl implements OtpService {
      */
     @Override
     public int getAttempts(Long userId) {
-        String val = redisTemplate.opsForValue().get("otp:attempts:" + userId);
+        String val = redisTemplate.opsForValue().get(OtpConstant.ATTEMPTS_PREFIX + userId);
         return val != null ? Integer.parseInt(val.trim()) : 0;
     }
 
@@ -185,7 +179,7 @@ public class OtpServiceImpl implements OtpService {
      */
     @Override
     public long getAttemptsTtl(Long userId) {
-        Long ttl = redisTemplate.getExpire("otp:attempts:" + userId, TimeUnit.SECONDS);
+        Long ttl = redisTemplate.getExpire(OtpConstant.ATTEMPTS_PREFIX + userId, TimeUnit.SECONDS);
         return ttl != null ? ttl : -2L;
     }
 
@@ -198,15 +192,13 @@ public class OtpServiceImpl implements OtpService {
         return getAttempts(userId) >= MAX_ATTEMPTS;
     }
 
-    // ───────────────────────── Wrong ─────────────────────────────────────
-
     /**
      * Tăng số lần nhập OTP sai của user.
      * Khi đạt MAX_WRONG (5 lần), session OTP sẽ bị hủy.
      */
     @Override
     public long incrementWrong(Long userId) {
-        String key = "otp:wrong:" + userId;
+        String key = OtpConstant.WRONG_PREFIX + userId;
 
         // Tăng số lần nhập OTP sai lên 1.
         // Nếu key chưa tồn tại, Redis sẽ tự tạo key với giá trị 1.
@@ -227,7 +219,7 @@ public class OtpServiceImpl implements OtpService {
      */
     @Override
     public void resetWrong(Long userId) {
-        redisTemplate.opsForValue().set("otp:wrong:" + userId, "0", 5, TimeUnit.MINUTES);
+        redisTemplate.opsForValue().set(OtpConstant.WRONG_PREFIX + userId, "0", 5, TimeUnit.MINUTES);
     }
 
     /**
@@ -236,7 +228,7 @@ public class OtpServiceImpl implements OtpService {
      */
     @Override
     public int getWrong(Long userId) {
-        String val = redisTemplate.opsForValue().get("otp:wrong:" + userId);
+        String val = redisTemplate.opsForValue().get(OtpConstant.WRONG_PREFIX + userId);
         return val != null ? Integer.parseInt(val) : 0;
     }
 
@@ -258,7 +250,7 @@ public class OtpServiceImpl implements OtpService {
      */
     @Override
     public long incrementAndGetWrong(Long userId) {
-        String key = "otp:wrong:" + userId;
+        String key = OtpConstant.WRONG_PREFIX + userId;
         Long current = redisTemplate.opsForValue().increment(key);
         if (current != null && current == 1) {
             redisTemplate.expire(key, OTP_TTL_SECONDS, TimeUnit.SECONDS);
@@ -275,19 +267,19 @@ public class OtpServiceImpl implements OtpService {
      */
     @Override
     public void clearAll(Long userId) {
-        String token = redisService.getString("pending:user:" + userId);
+        String token = redisService.getString(PendingTokenConstant.USER_PREFIX + userId);
 
         redisTemplate.delete(List.of(
-                "otp:" + userId,
-                "otp:cooldown:" + userId,
-                "otp:attempts:" + userId,
-                "otp:wrong:" + userId
+                OtpConstant.PREFIX + userId,
+                OtpConstant.COOLDOWN_PREFIX + userId,
+                OtpConstant.ATTEMPTS_PREFIX + userId,
+                OtpConstant.WRONG_PREFIX + userId
         ));
 
-        redisService.delete("pending:user:" + userId);
+        redisService.delete(PendingTokenConstant.USER_PREFIX + userId);
 
         if (token != null && !token.isBlank()) {
-            redisService.delete("pending:" + token);
+            redisService.delete(PendingTokenConstant.PREFIX + token);
         }
     }
 
@@ -299,7 +291,7 @@ public class OtpServiceImpl implements OtpService {
     @Override
     public void clearOtpSessionKeepAttempts(Long userId, String clientToken) {
         // Lấy map token từ userId trong redis
-        String mappedToken = redisService.getString("pending:user:" + userId);
+        String mappedToken = redisService.getString(PendingTokenConstant.USER_PREFIX + userId);
         // token chuẩn bị xóa
         String tokenToDelete = null;
 
@@ -312,7 +304,7 @@ public class OtpServiceImpl implements OtpService {
         // từ pendingToken
         else if (clientToken != null && !clientToken.isBlank()) {
             // Lấy ra user id đang sỡ hữu clientToken này
-            String ownerId = redisService.getString("pending:" + clientToken);
+            String ownerId = redisService.getString(PendingTokenConstant.PREFIX + clientToken);
 
             // Nếu userId sỡ hữu clientToken và userId của tài khoản đăng kí
             // là cùng 1 người thì xóa -> lưu vào tokenToDelete
@@ -323,20 +315,20 @@ public class OtpServiceImpl implements OtpService {
 
         // Xóa session OTP nhưng giữ attempts
         redisTemplate.delete(List.of(
-                "otp:" + userId,
-                "otp:cooldown:" + userId,
-                "otp:wrong:" + userId
+                OtpConstant.PREFIX + userId,
+                OtpConstant.COOLDOWN_PREFIX + userId,
+                OtpConstant.WRONG_PREFIX + userId
         ));
-        redisService.delete("pending:user:" + userId);
+        redisService.delete(PendingTokenConstant.USER_PREFIX + userId);
 
         if (tokenToDelete != null && !tokenToDelete.isBlank()) {
-            redisService.delete("pending:" + tokenToDelete);
+            redisService.delete(PendingTokenConstant.PREFIX + tokenToDelete);
         }
     }
 
     @Override
     public long getOtpTtl(Long id) {
-        return redisTemplate.getExpire("otp:" + id) != null ? redisTemplate.getExpire("otp:" + id) : -2L;
+        return redisTemplate.getExpire(OtpConstant.PREFIX + id) != null ? redisTemplate.getExpire(OtpConstant.PREFIX + id) : -2L;
     }
 }
 

@@ -30,7 +30,7 @@ public class EmployeeController {
 
     /**
      * Tìm kiếm ứng viên (dành cho COMPANY — nhà tuyển dụng).
-     * <p>
+     * 
      * CHỈ trả hồ sơ CÔNG KHAI (isPublic = true); loại user bị ban.
      * Route /search (literal) được Spring ưu tiên hơn /{id} — không conflict.
      *

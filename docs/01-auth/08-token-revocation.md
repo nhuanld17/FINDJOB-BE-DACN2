@@ -11,7 +11,7 @@ Claim trong accesstoken và refresh token
 
 - 4 nhóm key trong redis:
 
-+ session:{sessionId} -> hash chứa username, deviceId, refreshJtiCurrent, status, createdAt, lastSeen, deviceName, ip, userAgent
++ session:{sessionId} -> hash chứa username, deviceId, currentRefreshJti, status, createdAt, lastSeen, deviceName, ip, userAgent
 + user:sessions:{userId} -> set các sessionId của user có {userId} để thực hiện revoke all hoặc list các thiết bị đang đăng nhập
 + blacklist:access:{jti} -> TTL = thời gian còn lại của Accesstoken khi bị thu hồi
 + blacklist:refresh:{jti} -> TTL = thời gian còn lại của Refreshtoken khi bị thu hồi
@@ -60,7 +60,7 @@ Hai token đều mang các claim:
 
 Backend ghi:
 
-- `session:{sessionId}` -> hash chứa `username`, `deviceId`, `refreshJtiCurrent`, `status=ACTIVE`, `createdAt`, `lastSeen`, `deviceName`, `ip`, `userAgent`.
+- `session:{sessionId}` -> hash chứa `username`, `deviceId`, `currentRefreshJti`, `status=ACTIVE`, `createdAt`, `lastSeen`, `deviceName`, `ip`, `userAgent`.
     
 - `user:sessions:{userId}` -> add `sessionId`.
 
@@ -70,7 +70,7 @@ Backend ghi:
 session:s-uuid-001
   username=name-001
   deviceId=d-uuid-001
-  refreshJtiCurrent=rjti-001
+  currentRefreshJti=rjti-001
   status=ACTIVE
   createdAt=...
   lastSeen=...
@@ -135,7 +135,7 @@ Khi access token hết hạn:
     
     - session còn `ACTIVE`
         
-    - `refreshJtiCurrent` trong Redis đúng bằng `jti` của refresh token gửi lên.
+    - `currentRefreshJti` trong Redis đúng bằng `jti` của refresh token gửi lên.
         
 
 Nếu đúng, backend thực hiện **refresh token rotation**:
@@ -144,7 +144,7 @@ Nếu đúng, backend thực hiện **refresh token rotation**:
     
 - sinh refresh token mới với `jti_refresh_new`,
     
-- update `session:{sessionId}.refreshJtiCurrent = jti_refresh_new`,
+- update `session:{sessionId}.currentRefreshJti = jti_refresh_new`,
     
 - update `lastSeen`.
     
@@ -153,15 +153,15 @@ Ví dụ logic:
 ```
 refresh request
 -> validate refresh token
--> compare jti == refreshJtiCurrent
+-> compare jti == currentRefreshJti
 -> issue new access + new refresh
--> save new refreshJtiCurrent (refresh token cũ tự hết hiệu lực do jti lệch)
+-> save new currentRefreshJti (refresh token cũ tự hết hiệu lực do jti lệch)
 -> return new tokens
 ```
 
-> **Lưu ý (quan trọng):** rotation **KHÔNG** blacklist refresh token cũ — nó tự mất hiệu lực vì `jti` không còn khớp `refreshJtiCurrent`. Nếu cố tình blacklist nó, guard blacklist (bước 3) sẽ chặn trước và làm mất khả năng phát hiện reuse ở bước 5 — xem `4. Refresh token.md` §5.
+> **Lưu ý (quan trọng):** rotation **KHÔNG** blacklist refresh token cũ — nó tự mất hiệu lực vì `jti` không còn khớp `currentRefreshJti`. Nếu cố tình blacklist nó, guard blacklist (bước 3) sẽ chặn trước và làm mất khả năng phát hiện reuse ở bước 5 — xem `4. Refresh token.md` §5.
 
-Nếu refresh token cũ bị reuse sau khi đã rotate (`jti` không còn khớp `refreshJtiCurrent`), đó là dấu hiệu token bị lộ. Backend xử lý: set `session:{sessionId}.status = REVOKED`, blacklist chính refresh token bị replay đó, và trả `3013 TOKEN_REUSE_DETECTED` → toàn bộ phiên bị vô hiệu, buộc đăng nhập lại.
+Nếu refresh token cũ bị reuse sau khi đã rotate (`jti` không còn khớp `currentRefreshJti`), đó là dấu hiệu token bị lộ. Backend xử lý: set `session:{sessionId}.status = REVOKED`, blacklist chính refresh token bị replay đó, và trả `3013 TOKEN_REUSE_DETECTED` → toàn bộ phiên bị vô hiệu, buộc đăng nhập lại.
 
 ## Logout thiết bị hiện tại
 
@@ -175,7 +175,7 @@ Khi user logout trên chính thiết bị đang dùng:
     
 4. Blacklist access token hiện tại theo `jti_access` nếu có.
     
-5. Blacklist refresh token hiện tại theo `refreshJtiCurrent`.
+5. Blacklist refresh token hiện tại theo `currentRefreshJti`.
     
 6. Vì xóa hẳn nên mất metadata phiên (khác reuse-detection — giữ lại `REVOKED` để audit). Cookie `refreshToken` phía client luôn bị xóa (idempotent, thực ra chạy đầu tiên).
     
@@ -196,7 +196,7 @@ Trong màn “thiết bị đã đăng nhập”, user chọn logout một thi�
     
 4. Set `status=REVOKED`.
     
-5. Blacklist refresh `refreshJtiCurrent`.
+5. Blacklist refresh `currentRefreshJti`.
     
 6. Nếu bạn có lưu `currentAccessJti` cuối cùng thì blacklist luôn access đó; nếu không thì access đang sống của thiết bị đó sẽ chết khi hết hạn ngắn.
 
@@ -237,7 +237,7 @@ Có vài case thực tế cần nghĩ tới:
     
 - Redis update fail sau khi DB đã commit: nên dùng outbox/retry nếu session metadata còn được lưu ở Postgres.
     
-- Refresh token bị replay: nếu `jti` không còn khớp `refreshJtiCurrent`, reject request và có thể revoke cả session.
+- Refresh token bị replay: nếu `jti` không còn khớp `currentRefreshJti`, reject request và có thể revoke cả session.
     
 
 ## Tóm tắt luồng
@@ -260,7 +260,7 @@ Bạn có thể hình dung toàn hệ thống như sau:
     
     - Kiểm tra refresh token.
         
-    - So khớp `refreshJtiCurrent`.
+    - So khớp `currentRefreshJti`.
         
     - Rotate refresh token và cập nhật session.
         

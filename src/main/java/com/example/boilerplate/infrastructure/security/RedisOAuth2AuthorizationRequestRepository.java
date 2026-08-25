@@ -1,5 +1,6 @@
 package com.example.boilerplate.infrastructure.security;
 
+import com.example.boilerplate.common.constant.Oauth2Constant;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -20,15 +21,15 @@ import java.util.concurrent.TimeUnit;
 /**
  * Lưu trữ {@link OAuth2AuthorizationRequest} vào Redis, chỉ ghi UUID vào cookie.
  *
- * <p>So với {@code HttpSessionOAuth2AuthorizationRequestRepository} mặc định:
- * <ul>
- *   <li>Hoạt động với {@code SessionCreationPolicy.STATELESS}</li>
- *   <li>Không phụ thuộc HTTP Session → lần đầu login OIDC sau restart BE không fail</li>
- *   <li>Tương thích với Android (React Native) — mobile app gửi cookie qua thư viện</li>
- *   <li>Redis key tồn tại ngay cả khi restart BE</li>
- * </ul>
+ * So với {@code HttpSessionOAuth2AuthorizationRequestRepository} mặc định:
+ * 
+ *   - Hoạt động với {@code SessionCreationPolicy.STATELESS}
+ *   - Không phụ thuộc HTTP Session → lần đầu login OIDC sau restart BE không fail
+ *   - Tương thích với Android (React Native) — mobile app gửi cookie qua thư viện
+ *   - Redis key tồn tại ngay cả khi restart BE
+ * 
  *
- * <p>Constructor explicit (không Lombok) để đảm bảo {@code @Qualifier} hoạt động chính xác,
+ * Constructor explicit (không Lombok) để đảm bảo {@code @Qualifier} hoạt động chính xác,
  * inject đúng {@code RedisTemplate} dùng JDK serialization thay vì Jackson JSON.
  */
 @Slf4j
@@ -37,13 +38,6 @@ public class RedisOAuth2AuthorizationRequestRepository
         implements AuthorizationRequestRepository<OAuth2AuthorizationRequest> {
 
     private static final String COOKIE_NAME = "oauth2_state";
-    private static final String REDIS_KEY_PREFIX = "oauth2:state:";
-
-    /**
-     * Prefix lưu return_url của mobile (keyed by OAuth 'state' param, KHÔNG phải stateId UUID).
-     * Xem PLAN_MOBILE_OAUTH.md mục 2 để hiểu rõ sự khác biệt giữa 2 loại "state".
-     */
-    private static final String RETURN_KEY_PREFIX = "oauth2:return:";
 
     private static final int STATE_TTL_SECONDS = 120;
 
@@ -64,25 +58,6 @@ public class RedisOAuth2AuthorizationRequestRepository
     }
 
     @Override
-    public OAuth2AuthorizationRequest loadAuthorizationRequest(HttpServletRequest request) {
-        String stateId = getStateIdFromCookie(request);
-        if (stateId == null) {
-            log.warn("OAuth2: Cookie '{}' not found in callback request — first login may fail", COOKIE_NAME);
-            return null;
-        }
-
-        OAuth2AuthorizationRequest loaded = redisTemplate.opsForValue()
-                .get(REDIS_KEY_PREFIX + stateId);
-
-        if (loaded == null) {
-            log.warn("OAuth2: No authorization request in Redis for key '{}' — state may have expired (TTL={}s) or wrong RedisTemplate is being used",
-                    REDIS_KEY_PREFIX + stateId, STATE_TTL_SECONDS);
-        }
-
-        return loaded;
-    }
-
-    @Override
     public void saveAuthorizationRequest(
             OAuth2AuthorizationRequest authorizationRequest,
             HttpServletRequest request,
@@ -95,7 +70,7 @@ public class RedisOAuth2AuthorizationRequestRepository
 
         String stateId = UUID.randomUUID().toString();
         redisTemplate.opsForValue().set(
-                REDIS_KEY_PREFIX + stateId,
+                Oauth2Constant.STATE_PREFIX + stateId,
                 authorizationRequest,
                 STATE_TTL_SECONDS,
                 TimeUnit.SECONDS
@@ -104,16 +79,35 @@ public class RedisOAuth2AuthorizationRequestRepository
         writeCookie(request, response, stateId, STATE_TTL_SECONDS);
 
         // Mobile OAuth: nếu có return_url hợp lệ, lưu vào Redis keyed by OAuth 'state'
-        // ⚠️ Dùng authorizationRequest.getState() — KHÔNG phải stateId UUID (xem plan mục 2)
+        // Dùng authorizationRequest.getState() — KHÔNG phải stateId UUID (xem plan mục 2)
         String returnUrl = request.getParameter("return_url");
         if (returnUrl != null && !returnUrl.isBlank() && isAllowedMobileScheme(returnUrl)) {
             stringRedisTemplate.opsForValue().set(
-                    RETURN_KEY_PREFIX + authorizationRequest.getState(),
+                    Oauth2Constant.RETURN_PREFIX + authorizationRequest.getState(),
                     returnUrl,
                     STATE_TTL_SECONDS,
                     TimeUnit.SECONDS
             );
         }
+    }
+
+    @Override
+    public OAuth2AuthorizationRequest loadAuthorizationRequest(HttpServletRequest request) {
+        String stateId = getStateIdFromCookie(request);
+        if (stateId == null) {
+            log.warn("OAuth2: Cookie '{}' not found in callback request — first login may fail", COOKIE_NAME);
+            return null;
+        }
+
+        OAuth2AuthorizationRequest loaded = redisTemplate.opsForValue()
+                .get(Oauth2Constant.STATE_PREFIX + stateId);
+
+        if (loaded == null) {
+            log.warn("OAuth2: No authorization request in Redis for key '{}' — state may have expired (TTL={}s) or wrong RedisTemplate is being used",
+                    Oauth2Constant.STATE_PREFIX + stateId, STATE_TTL_SECONDS);
+        }
+
+        return loaded;
     }
 
     @Override
@@ -131,7 +125,7 @@ public class RedisOAuth2AuthorizationRequestRepository
     private void removeState(HttpServletRequest request, HttpServletResponse response) {
         String stateId = getStateIdFromCookie(request);
         if (stateId != null) {
-            redisTemplate.delete(REDIS_KEY_PREFIX + stateId);
+            redisTemplate.delete(Oauth2Constant.STATE_PREFIX + stateId);
         }
         writeCookie(request, response, null, 0);
     }

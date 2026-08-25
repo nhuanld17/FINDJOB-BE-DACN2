@@ -138,10 +138,16 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(AuthenticationException.class)
     public ResponseEntity<?> handleAuthenticationException(AuthenticationException ex) {
         // ✅ Không expose ex.getMessage() — dùng message từ ErrorCode
+        // ⚠️ Fix Bug 1: dùng overload of(status, code, message) — trước đây truyền
+        // business code (3001) vào tham số status khiến body có status=3001, code=null.
         ErrorCode errorCode = ErrorCode.UNAUTHENTICATED;
         return ResponseEntity
                 .status(errorCode.getHttpStatusCode())
-                .body(ErrorResponse.of(errorCode.getCode(), errorCode.getMessage()));
+                .body(ErrorResponse.of(
+                        errorCode.getHttpStatusCode().value(),
+                        errorCode.getCode(),
+                        errorCode.getMessage()
+                ));
     }
 
     // 403 - Access Denied
@@ -150,7 +156,11 @@ public class GlobalExceptionHandler {
         ErrorCode errorCode = ErrorCode.ACCESS_DENIED;
         return ResponseEntity
                 .status(errorCode.getHttpStatusCode())
-                .body(ErrorResponse.of(errorCode.getCode(), errorCode.getMessage()));
+                .body(ErrorResponse.of(
+                        errorCode.getHttpStatusCode().value(),
+                        errorCode.getCode(),
+                        errorCode.getMessage()
+                ));
     }
 
     // 404 — URL does not exist
@@ -176,11 +186,16 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     public ResponseEntity<?> handleGeneral(Exception ex) {
         log.error("Unhandled exception: ", ex);
-        // Dùng ErrorCode thay vì hardcode 500
+        // Dùng ErrorCode thay vì hardcode 500 — dùng overload đủ 3 tham số
+        // (trước đây truyền business code 9999 vào tham số status → body status=9999, code=null)
         ErrorCode errorCode = ErrorCode.INTERNAL_ERROR;
         return ResponseEntity
                 .status(errorCode.getHttpStatusCode())
-                .body(ErrorResponse.of(errorCode.getCode(), errorCode.getMessage()));
+                .body(ErrorResponse.of(
+                        errorCode.getHttpStatusCode().value(),
+                        errorCode.getCode(),
+                        errorCode.getMessage()
+                ));
     }
 
     // ===== Helpers =====

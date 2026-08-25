@@ -193,6 +193,63 @@ OAuth2AuthorizationRequest.builder()
     .build();
 ```
 
+> ⚠️ **Đoạn trên là pseudo-code minh họa** — code thật của dự án KHÔNG có chỗ nào tự dựng `OAuth2AuthorizationRequest` bằng `builder()`. Spring Security tự build object này từ cấu hình. Chi tiết ở mục "Tham số lấy từ đâu?" bên dưới.
+
+---
+
+#### 🔍 Tham số lấy từ đâu? — `application.yml` → `ClientRegistration` → Resolver
+
+Chuỗi thực tế (không có code nào tự gọi `builder()`):
+
+```
+application.yml
+  └── spring.security.oauth2.client.registration.google.*
+        │  Spring Boot auto-configuration → tự tạo bean
+        ▼
+ClientRegistration  ──►  ClientRegistrationRepository
+        │
+        ▼  Khi user gọi GET /oauth2/authorization/google
+OAuth2AuthorizationRequestRedirectFilter
+        │  gọi resolver
+        ▼
+DefaultOAuth2AuthorizationRequestResolver   ← SecurityConfig.pkceResolver()
+        │  đọc ClientRegistration + sinh thêm tham số động
+        ▼
+OAuth2AuthorizationRequest  →  lưu Redis  →  302 redirect sang Google
+```
+
+Bảng mapping giữa `application.yml` và tham số trong request:
+
+| Tham số trong request | Lấy từ đâu |
+|---|---|
+| `clientId` | `spring.security.oauth2.client.registration.google.client-id` (yml) |
+| `clientSecret` | `...google.client-secret` (yml) — chỉ dùng ở Bước 5 (exchange code) |
+| `scopes` (`openid`, `email`, `profile`) | `...google.scope` (yml) |
+| `redirectUri` | `...google.redirect-uri: "{baseUrl}/login/oauth2/code/google"` (yml) |
+| `state` | 🔄 Spring sinh động (UUID) mỗi request — chống CSRF |
+| `nonce` | 🔄 Spring sinh động vì có scope `openid` — chống ID Token replay |
+| `code_challenge` + `code_challenge_method=S256` | 🔄 Sinh động bởi `OAuth2AuthorizationRequestCustomizers.withPkce()` (SecurityConfig) |
+| `authorization-uri`, `token-uri`, `jwk-set-uri` | Mặc định Spring Boot có sẵn cho provider `google` (không cần khai báo trong yml) |
+
+> 🔑 **Mấu chốt:** `ClientRegistration` là "hồ sơ đăng ký app" — Spring Boot đọc `registration.google.*` trong yml và tự tạo bean này. Resolver chỉ việc đọc từ repository + sinh thêm `state`/`nonce`/PKCE rồi gói thành `OAuth2AuthorizationRequest`. Muốn đổi `client-id`, scope hay `redirect-uri` → **chỉ sửa yml, không cần sửa code Java**.
+
+> ℹ️ **`{baseUrl}` trong redirect-uri là placeholder** — Spring Security thay nó bằng `scheme://host:port` của request hiện tại tại runtime. Vì vậy `forward-headers-strategy: framework` là bắt buộc khi chạy sau reverse proxy (nếu không, Spring tính ra `http://...` sai scheme → Google báo `redirect_uri_mismatch`).
+
+---
+
+#### 🆚 Vì sao application.yml có 2 tham số redirect?
+
+Hai tham số này phục vụ **2 lần redirect khác nhau** trong flow — đừng nhầm:
+
+| | `redirect-uri` | `redirect-url` |
+|---|---|---|
+| Vị trí trong yml | `spring.security.oauth2.client.registration.google.redirect-uri` | `app.oauth2.redirect-url` |
+| Giá trị mặc định | `{baseUrl}/login/oauth2/code/google` | `http://localhost:5173/oauth-callback` |
+| Lần redirect nào | **Lần 1: Google → Backend** (Bước 4) | **Lần 2: Backend → Web FE** (Bước 8-9) |
+| Vai trò | Địa chỉ Google gửi `code` + `state` về sau khi user consent — phải khớp Google Cloud Console | Địa chỉ backend redirect browser web về sau khi login xong, kèm `?ticket=xxx` |
+| Là chuẩn OAuth2? | ✅ Đúng — là tham số OAuth2 chính thức | ❌ Không — config riêng của dự án |
+| Mobile có dùng? | ✅ Có (cả web & mobile dùng chung) | ❌ Không — mobile dùng `return_url` động (xem mục phân biệt `redirect_uri` vs `return_url` ở cuối doc) |
+
 Sau đó request object này được ghi vào Redis qua `RedisOAuth2AuthorizationRequestRepository`:
 
 ```java
@@ -200,7 +257,7 @@ Sau đó request object này được ghi vào Redis qua `RedisOAuth2Authorizati
 
 // THỨ 1: Toàn bộ OAuth2AuthorizationRequest (JDK serialized)
 String stateId = UUID.randomUUID().toString();    // stateId = UUID riêng, để làm key
-redisTemplate.set("oauth2:state:" + stateId, authorizationRequest, 120s);
+redisTemplate.set(Oauth2Constant.STATE_PREFIX + stateId  // prefix "oauth2:state:" định nghĩa trong common/constant/Oauth2Constant, authorizationRequest, 120s);
 // Set cookie "oauth2_state" chứa stateId (HttpOnly, SameSite=Lax)
 writeCookie(request, response, stateId, 120);
 // Cookie này được trình duyệt web (tab chính) hoặc in-app browser (mobile)
@@ -211,7 +268,7 @@ writeCookie(request, response, stateId, 120);
 String returnUrl = request.getParameter("return_url");
 if (returnUrl != null && isAllowedMobileScheme(returnUrl)) {
     stringRedisTemplate.set(
-        "oauth2:return:" + authorizationRequest.getState(),  // key = OAuth state, KHÔNG phải stateId
+        Oauth2Constant.RETURN_PREFIX + authorizationRequest.getState(),  // key = OAuth state, KHÔNG phải stateId
         returnUrl,
         120s
     );
@@ -302,7 +359,7 @@ String stateId = getStateIdFromCookie(request);
 
 // Load request từ Redis bằng stateId
 OAuth2AuthorizationRequest loaded = redisTemplate.opsForValue()
-    .get("oauth2:state:" + stateId);
+    .get(Oauth2Constant.STATE_PREFIX + stateId  // prefix "oauth2:state:" định nghĩa trong common/constant/Oauth2Constant);
 ```
 
 Lúc này filter có `OAuth2AuthorizationRequest` — object chứa toàn bộ thông tin của request gốc (clientId, scope, redirect_uri, **state gốc**, ...).
@@ -611,7 +668,7 @@ userRepository.findByEmailWithRoles(email)
 // Tạo User entity
 user = new User();
 user.setUsername(generateUniqueUsername(email));  // Giải thích bên dưới
-user.setPassword(passwordEncoder.encode(UUID.randomUUID().toString()));  // Password random
+user.setPassword(null);  // KHÔNG đặt password — user Google chưa có mật khẩu (V15: password nullable)
 user.setFullName(name);                           // Lấy từ profile Google
 user.setAvatarUrl(picture);                       // Avatar từ Google
 user.setActive(true);                             // Google đã verify → active ngay
@@ -641,9 +698,12 @@ employeeRepository.save(employee);   // Save Employee riêng vì không cascade 
 > ```
 > Mục đích: tạo username từ email, nếu trùng thì thêm số. Không cho user tự chọn (tránh xung đột).
 
-> **Password random để làm gì?** DB có `NOT NULL` constraint trên password. User Google không cần password (chỉ login qua Google). Dùng `UUID` hash → `passwordEncoder.matches(anyPassword, hashedPassword)` luôn trả `false` → không ai login được bằng password. Vừa thoả constraint, vừa an toàn.
+> **Vì sao `password = null`?** Migration V15 đã cho phép cột `password` NULL (bỏ NOT NULL). User Google không có mật khẩu → `null` nghĩa là "chưa đặt mật khẩu". Hệ quả:
+> - Không ai login bằng email/password được cho đến khi user tự đặt qua `POST /auth/change-password` (lần đầu chỉ cần `newPassword`, không cần oldPassword).
+> - `AuthResponse.hasPassword = false` → FE hiện form "đặt mật khẩu lần đầu" (2 field) thay vì "đổi mật khẩu" (3 field).
+> - ❌ Trước đây dùng `UUID` hash để "lấp chỗ trống" cho constraint NOT NULL — anti-pattern, đã loại bỏ ở migration V15.
 
-> **Nếu user xoá Google account sau này thì sao?** Không login được nữa. Cần hỗ trợ manual để set password mới (tính năng quên mật khẩu / support).
+> **Nếu user xoá Google account sau này thì sao?** Không login bằng Google được nữa. Nhưng nếu user đã đặt mật khẩu từ trước (qua change-password) thì vẫn login bằng email/password bình thường. Nếu chưa từng đặt → cần hỗ trợ manual để đặt lại mật khẩu.
 
 ---
 
@@ -750,7 +810,7 @@ try {
 ```
 
 Hàm này làm 2 việc:
-- `redisTemplate.delete("oauth2:state:" + stateId)` — xoá `OAuth2AuthorizationRequest` khỏi Redis
+- `redisTemplate.delete(Oauth2Constant.STATE_PREFIX + stateId  // prefix "oauth2:state:" định nghĩa trong common/constant/Oauth2Constant)` — xoá `OAuth2AuthorizationRequest` khỏi Redis
 - `writeCookie(request, response, null, 0)` — clear cookie `oauth2_state` (set maxAge = 0)
 
 > **Tại sao cần dọn dẹp?**
@@ -784,7 +844,7 @@ CustomOidcUser oidcUser = (CustomOidcUser) authentication.getPrincipal();
 Long userId = oidcUser.getUserId();  // ← userId local từ DB, lấy từ Bước 7
 
 String ticket = UUID.randomUUID().toString();
-stringRedisTemplate.set("oauth2:ticket:" + ticket, userId.toString(), 60s);
+stringRedisTemplate.set(Oauth2Constant.TICKET_PREFIX + ticket, userId.toString(), 60s);
 ```
 
 Ticket này giống như **tờ phiếu gửi xe**:
@@ -802,7 +862,7 @@ String state = request.getParameter("state");
 
 // Lấy return_url từ Redis — nếu là mobile đã gửi lên từ Bước 1
 String returnUrl = (state != null)
-    ? stringRedisTemplate.getAndDelete("oauth2:return:" + state)  // GETDEL atomic
+    ? stringRedisTemplate.getAndDelete(Oauth2Constant.RETURN_PREFIX + state)  // GETDEL atomic
     : null;
 
 // Quyết định redirect về đâu
@@ -905,7 +965,7 @@ AuthResponse response = authService.exchangeTicket(
 #### Việc 1: `exchangeTicket()` — lấy userId từ ticket (atomic GETDEL)
 
 ```java
-String redisKey = "oauth2:ticket:" + ticket;
+String redisKey = Oauth2Constant.TICKET_PREFIX + ticket;
 String userIdStr = stringRedisTemplate.opsForValue().getAndDelete(redisKey);
 //               ^^^^^^^^^^^^^^^^^^^^^^
 //               GETDEL: đọc + xóa trong 1 lệnh Redis atomic
@@ -951,7 +1011,8 @@ Sau khi `createUserSession()` hoàn tất, backend trả về:
 
 ```json
 {
-  "status": "success",
+  "code": 1000,
+  "message": "Success",
   "data": {
     "code": 4001,
     "id": 1,
@@ -960,7 +1021,8 @@ Sau khi `createUserSession()` hoàn tất, backend trả về:
       { "id": 1, "name": "USER" }
     ],
     "accessToken": "eyJhbGciOiJIUzI1NiJ9...",
-    "refreshToken": null
+    "refreshToken": null,     // mobile: có giá trị (trả trong body); web: null (dùng cookie)
+    "hasPassword": false      // user Google chưa đặt mật khẩu
   }
 }
 ```
@@ -1018,9 +1080,10 @@ Khi Google callback, state được verify — nếu không khớp → từ ch�
 Chỉ log 8 ký tự đầu của ticket.
 > Ngăn chặn log injection / credential leak qua log file.
 
-### 9. Random password cho OIDC user
-`passwordEncoder.encode(UUID.randomUUID().toString())` — không ai login bằng password được.
-> Ngăn chặn: user OIDC không thể dùng password để login. Chỉ login được qua Google.
+### 9. password = NULL cho OIDC user (thay vì random hash)
+User Google được tạo với `password = null` (migration V15 bỏ NOT NULL, dọn data cũ `UPDATE users SET password = NULL WHERE auth_provider = 'GOOGLE'`).
+> Ngăn chặn: user OIDC không có mật khẩu → không thể login bằng email/password cho đến khi tự đặt qua `change-password` (lần đầu không cần oldPassword, `hasPassword = false`).
+> Chỉ login được qua Google (hoặc qua password sau khi đã đặt).
 
 ### 10. HttpOnly + SameSite=Strict cookie
 Refresh token được set trong cookie HttpOnly (không JS đọc được) + SameSite=Strict (không gửi trong cross-site request).
@@ -1360,6 +1423,8 @@ public RedisTemplate<String, OAuth2AuthorizationRequest> oauth2StateRedisTemplat
 | `oauth2:return:<state>` | `return_url` (String) | 120s | String | return_url cho mobile |
 | `oauth2:ticket:<uuid>` | `userId` (String) | 60s | String | One-time exchange ticket |
 | `session:<sessionId>` | Hash (username, deviceId, refreshJti, ...) | 7 ngày | JSON | Session info |
+
+> **Nguồn gốc prefix trong code:** `oauth2:*` → `Oauth2Constant`; `session:`/`user:sessions:` → private trong `SessionServiceImpl`; `otp:*` → `OtpConstant`; `pending:*` → `PendingTokenConstant` (đều ở `common/constant/`). Đây là literal thật trong Redis — không đổi khi đổi tên constant.
 | `user:sessions:<userId>` | Set of sessionId | Vô hạn | String | Danh sách session của user |
 
 ---

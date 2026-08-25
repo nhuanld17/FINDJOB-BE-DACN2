@@ -1,13 +1,14 @@
 package com.example.boilerplate.infrastructure.security.jwt;
 
 import com.example.boilerplate.common.constant.ErrorCode;
+import com.example.boilerplate.common.constant.JwtConstant;
+import com.example.boilerplate.common.constant.SessionConstant;
 import com.example.boilerplate.common.exception.CustomAuthException;
+import com.example.boilerplate.features.auth.service.SessionService;
 import com.example.boilerplate.features.auth.service.TokenBlacklistService;
-import com.example.boilerplate.infrastructure.redis.RedisService;
 import com.example.boilerplate.infrastructure.security.CustomUserDetails;
 import com.example.boilerplate.infrastructure.security.SecurityConfig;
 import com.example.boilerplate.infrastructure.security.UserDetailsServiceImpl;
-import com.example.boilerplate.infrastructure.security.oauth2.JwtUtil;
 import io.jsonwebtoken.ExpiredJwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -37,8 +38,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     private final AuthenticationEntryPoint authenticationEntryPoint;
     private final TokenBlacklistService tokenBlacklistService;
 
+    private final SessionService sessionService;
     private final PathMatcher pathMatcher = new AntPathMatcher();
-    private final RedisService redisService;
 
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
@@ -68,15 +69,16 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             HttpServletResponse response,
             FilterChain filterChain) throws ServletException, IOException {
 
-        String authorizationHeader = request.getHeader("Authorization");
+        logger.info("JWT FILTER ==============================");
+        String authorizationHeader = request.getHeader(JwtConstant.AUTHORIZATION_HEADER);
 
         // If no token -> skip, let the next filter process
-        if (authorizationHeader == null || !authorizationHeader.startsWith("Bearer ")) {
+        if (authorizationHeader == null || !authorizationHeader.startsWith(JwtConstant.BEARER_PREFIX)) {
             filterChain.doFilter(request, response);
             return;
         }
 
-        String token = authorizationHeader.substring(7);
+        String token = authorizationHeader.substring(JwtConstant.BEARER_PREFIX.length());
         String usernameFromToken;
         String jtiFromToken;
         String sessionIdFromToken;
@@ -120,7 +122,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
         // Lấy toàn bộ session:{sessionId} trong 1 lần (HGETALL) thay vì gọi Redis
         // nhiều lần. Map rỗng = session không tồn tại (hoặc đã hết TTL).
-        Map<Object, Object> session = redisService.getSession(sessionIdFromToken);
+        Map<Object, Object> session = sessionService.getSession(sessionIdFromToken);
         if (session.isEmpty()) {
             // Xóa context và cho authenticationEntryPoint xử lí
             SecurityContextHolder.clearContext();
@@ -133,8 +135,8 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         }
 
         // status = ACTIVE ko
-        Object statusObj = session.get("status");
-        if (statusObj == null || !"ACTIVE".equals(statusObj.toString())) {
+        Object statusObj = session.get(SessionConstant.STATUS);
+        if (statusObj == null || !SessionConstant.STATUS_ACTIVE.equals(statusObj.toString())) {
             SecurityContextHolder.clearContext();
             authenticationEntryPoint.commence(
                     request,
@@ -145,7 +147,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         }
 
         // Check tiếp: username trong session:{sessionId} có khớp với sub trong token không
-        Object usernameObj = session.get("username");
+        Object usernameObj = session.get(SessionConstant.USERNAME);
         if (usernameObj == null || !usernameObj.toString().equals(usernameFromToken)) {
             SecurityContextHolder.clearContext();
             authenticationEntryPoint.commence(
@@ -157,7 +159,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         }
 
         // Check: deviceId trong session:{sessionId} có khớp với deviceId claim không.
-        Object deviceIdObj = session.get("deviceId");
+        Object deviceIdObj = session.get(SessionConstant.DEVICE_ID);
         if (deviceIdObj == null || !deviceIdObj.toString().equals(deviceIdFromToken)) {
             SecurityContextHolder.clearContext();
             authenticationEntryPoint.commence(
@@ -173,6 +175,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         // Và username từ token không null
         if (usernameFromToken != null && SecurityContextHolder.getContext().getAuthentication() == null) {
             try {
+
                 // Lấy CustomerUserDetail từ username
                 CustomUserDetails userDetails = userDetailsService.loadByUsername(usernameFromToken);
 
@@ -205,7 +208,7 @@ public class JwtAuthFilter extends OncePerRequestFilter {
                     SecurityContextHolder.getContext().setAuthentication(authToken);
 
                     // update last seen trong session
-                    redisService.updateSessionField(sessionIdFromToken, "lastSeen", LocalDateTime.now().toString());
+                    sessionService.updateSessionField(sessionIdFromToken, SessionConstant.LAST_SEEN, LocalDateTime.now().toString());
                 } else {
                     // Trường hợp token không hợp lệ
                     // => xóa context của SecurityContextHolder

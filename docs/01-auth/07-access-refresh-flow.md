@@ -53,7 +53,7 @@ Cả hai token được sinh bởi cùng một hàm `JwtUtil.buildToken(...)`, k
 
 | Claim | Kiểu | Nguồn | Mục đích |
 |---|---|---|---|
-| `jti` | UUID | `UUID.randomUUID()` | Định danh duy nhất của token; dùng cho blacklist và so khớp `refreshJtiCurrent` |
+| `jti` | UUID | `UUID.randomUUID()` | Định danh duy nhất của token; dùng cho blacklist và so khớp `currentRefreshJti` |
 | `sub` | String | `userDetails.getUsername()` | Username (không phải email); dùng để tra user |
 | `roles` | String[] | `userDetails.getAuthorities()` | Danh sách quyền |
 | `sessionId` | UUID | tham số lúc build | Trỏ tới `session:{sessionId}` trong Redis |
@@ -72,7 +72,7 @@ AT và RT của cùng một lần cấp phát mang **giá trị giống nhau ở
 | Kênh truyền | Header `Authorization: Bearer <AT>` | Cookie tự động (chỉ tới `/refresh-token`, `/logout`) |
 | Thành phần xác thực | `JwtAuthFilter` | `refreshToken()` / `logout()` |
 | Rotation | Không | Có — mỗi lần refresh sinh RT mới |
-| Cơ chế thu hồi | `blacklist:access:{jti}`; hoặc session không còn hợp lệ | `blacklist:refresh:{jti}`; hoặc `jti ≠ refreshJtiCurrent`; hoặc session không còn hợp lệ |
+| Cơ chế thu hồi | `blacklist:access:{jti}`; hoặc session không còn hợp lệ | `blacklist:refresh:{jti}`; hoặc `jti ≠ currentRefreshJti`; hoặc session không còn hợp lệ |
 
 ### 2.3 Cấu hình vòng đời
 
@@ -97,7 +97,7 @@ Mô hình 2 token cân bằng giữa rủi ro lộ token và trải nghiệm ng�
   hạn cửa sổ khai thác nếu bị lộ. AT là JWT thuần, không có bản ghi Redis riêng.
 - **RT sống dài** để không phải đăng nhập lại thường xuyên, nhưng chỉ truyền tới 2 endpoint và
   nằm trong cookie `HttpOnly` (JS không đọc được) → bề mặt lộ hẹp; đồng thời RT **có thể bị thu
-  hồi** thông qua đối chiếu `refreshJtiCurrent` và blacklist.
+  hồi** thông qua đối chiếu `currentRefreshJti` và blacklist.
 
 ---
 
@@ -107,12 +107,12 @@ Luồng AT/RT thao tác trên các key Redis sau (chi tiết `3. Kiến trúc Se
 
 | Key | Kiểu | TTL | Vai trò |
 |---|---|---|---|
-| `session:{sessionId}` | Hash | 7 ngày (fixed-window, đặt 1 lần lúc login) | Nguồn sự thật về phiên; chứa `refreshJtiCurrent`, `status`, ... |
+| `session:{sessionId}` | Hash | 7 ngày (fixed-window, đặt 1 lần lúc login) | Nguồn sự thật về phiên; chứa `currentRefreshJti`, `status`, ... |
 | `user:sessions:{userId}` | Set | không có | Danh sách sessionId của user |
 | `blacklist:access:{jti}` | String | = thời gian còn lại của AT | Đánh dấu AT bị thu hồi |
 | `blacklist:refresh:{jti}` | String | = thời gian còn lại của RT | Đánh dấu RT bị thu hồi |
 
-Field then chốt cho luồng RT là **`session:{sessionId}.refreshJtiCurrent`** — lưu `jti` của RT
+Field then chốt cho luồng RT là **`session:{sessionId}.currentRefreshJti`** — lưu `jti` của RT
 đang được coi là hợp lệ. Đây là "con trỏ" xác định bản RT hiện hành; mọi so khớp reuse-detection
 dựa vào field này.
 
@@ -131,16 +131,16 @@ Trình tự trong `login()`:
 1. sessionId ← UUID.randomUUID()
 2. accessToken  ← jwtUtil.generateAccessToken(userDetails, sessionId, deviceId)   // exp +15 phút
    refreshToken ← jwtUtil.generateRefreshToken(userDetails, sessionId, deviceId)  // exp +7 ngày
-3. redisService.createSession(sessionId, username, deviceId, jti(refreshToken), deviceName, ip, userAgent)
-      → session:{sessionId} = { status: ACTIVE, refreshJtiCurrent: jti(refreshToken), ... }
+3. sessionService.createSession(sessionId, username, deviceId, jti(refreshToken), deviceName, ip, userAgent)
+      → session:{sessionId} = { status: ACTIVE, currentRefreshJti: jti(refreshToken), ... }
       → TTL(session) = 7 ngày
-4. redisService.addSessionToUser(userId, sessionId)
+4. sessionService.addSessionToUser(userId, sessionId)
 5. Set-Cookie: refreshToken=<refreshToken>   (HttpOnly, Secure, SameSite=Strict, maxAge 7 ngày)
 6. return AuthResponse { code: 4001, id, username, roles, accessToken }   // AT trong body
 ```
 
 Kết quả: client giữ AT (body) + RT (cookie); server có `session:{sessionId}` với
-`refreshJtiCurrent = jti(RT₀)`.
+`currentRefreshJti = jti(RT₀)`.
 
 ### 4.2 Giai đoạn 2 — Xác thực request (JwtAuthFilter)
 
@@ -177,8 +177,8 @@ Khi AT hết hạn, `JwtAuthFilter` trả `3015`. FE dùng tín hiệu này đ�
 |:--:|---|---|
 | 1 | Cookie rỗng / parse claim lỗi | `3009 UNAUTHORIZED` (xóa cookie) |
 | 2 | `jti ∈ blacklist:refresh:*` | `2010 TOKEN_REVOKED` |
-| 3 | `session` tồn tại / `status == ACTIVE` / `refreshJtiCurrent` khác null | `3012 SESSION_INACTIVE` (xóa cookie) |
-| 4 | `jti == session.refreshJtiCurrent` | **KHÔNG khớp → nhánh reuse §4.4** |
+| 3 | `session` tồn tại / `status == ACTIVE` / `currentRefreshJti` khác null | `3012 SESSION_INACTIVE` (xóa cookie) |
+| 4 | `jti == session.currentRefreshJti` | **KHÔNG khớp → nhánh reuse §4.4** |
 | 5 | User `isDeleted` / `!isActive` | `2007` / `2005` (xóa cookie) |
 | 6 | `isTokenValid` | `3009 UNAUTHORIZED` (xóa cookie) |
 
@@ -187,20 +187,20 @@ Khi khớp và user hợp lệ, thực hiện **rotation**:
 ```
 a. accessToken_new  ← generateAccessToken(userDetails, sessionId, deviceId)   // exp +15 phút
 b. refreshToken_new ← generateRefreshToken(userDetails, sessionId, deviceId)  // exp +7 ngày
-c. session.refreshJtiCurrent ← jti(refreshToken_new)   // con trỏ chuyển sang RT mới
+c. session.currentRefreshJti ← jti(refreshToken_new)   // con trỏ chuyển sang RT mới
 d. session.lastSeen ← now
 e. Set-Cookie: refreshToken=<refreshToken_new>
 f. return AuthResponse { code: 4001, accessToken: accessToken_new, ... }
 ```
 
-Sau bước (c), RT cũ có `jti ≠ refreshJtiCurrent` → mất hiệu lực. RT cũ **không được đưa vào
+Sau bước (c), RT cũ có `jti ≠ currentRefreshJti` → mất hiệu lực. RT cũ **không được đưa vào
 blacklist** (xem §4.4 để biết lý do). `sessionId` **không** đổi; TTL của `session:{sessionId}`
 **không** được gia hạn (vẫn hết hạn theo mốc 7 ngày kể từ login gốc — fixed-window, xem
 `3. Kiến trúc Session & Token.md` §6).
 
 ### 4.4 Giai đoạn 4 — Phát hiện tái sử dụng (Reuse Detection)
 
-Xảy ra ở bước 4 của §4.3 khi `jti(RT) ≠ refreshJtiCurrent`, tức RT đã bị thay thế bởi một lần
+Xảy ra ở bước 4 của §4.3 khi `jti(RT) ≠ currentRefreshJti`, tức RT đã bị thay thế bởi một lần
 rotation trước đó nhưng vẫn được gửi lại. Đây được coi là dấu hiệu RT bị lộ/replay. Xử lý:
 
 ```
@@ -214,10 +214,10 @@ Hệ quả: session chuyển `REVOKED` → toàn bộ token thuộc phiên (kể
 lại sẽ vô hiệu hóa cả phiên, buộc đăng nhập lại.
 
 **Lý do RT cũ không bị blacklist tại thời điểm rotation ("Hướng B"):** guard blacklist (bước 2,
-`2010`) chạy trước guard so khớp `refreshJtiCurrent` (bước 4, `3013`). Nếu rotation blacklist RT
+`2010`) chạy trước guard so khớp `currentRefreshJti` (bước 4, `3013`). Nếu rotation blacklist RT
 cũ, thì mọi lần replay RT cũ sẽ dừng ở bước 2 với `2010` và **không bao giờ tới bước 4** — reuse
 detection không được kích hoạt, `session.status` vẫn `ACTIVE`. Để reuse detection hoạt động, RT
-cũ phải "chết" bằng cơ chế lệch `refreshJtiCurrent` (bước 4), không phải bằng blacklist. Phân
+cũ phải "chết" bằng cơ chế lệch `currentRefreshJti` (bước 4), không phải bằng blacklist. Phân
 tích đầy đủ: `4. Refresh token.md` §5.
 
 Tóm tắt phân vai: `2010` dành cho thu hồi chủ động (logout); `3013` dành cho phát hiện replay.
@@ -241,7 +241,7 @@ Trình tự `logout()` (chi tiết `5. Logout.md`):
 3. deleteSession(sessionId)
 4. removeSessionFromUser(userId, sessionId)   // best-effort
 5. Nếu có AT (header) và remaining > 0 → blacklist AT
-6. Nếu remaining(RT) > 0 → blacklist refreshJtiCurrent
+6. Nếu remaining(RT) > 0 → blacklist currentRefreshJti
 7. return 200 { code: 1000 }
 ```
 
@@ -260,7 +260,7 @@ Client                        JwtAuthFilter        AuthService              Redi
   │ POST /login (email,pwd,deviceId,deviceName)                              │
   │ ───────────────────────────────────────────►  login()                   │
   │                                                createSession ───────────►│ session ACTIVE
-  │ ◄─────────────────────────────────────────── 200 {code:4001, AT₁}       │ refreshJtiCurrent=jti(RT₁)
+  │ ◄─────────────────────────────────────────── 200 {code:4001, AT₁}       │ currentRefreshJti=jti(RT₁)
   │  Set-Cookie: RT₁                                                          │
   │                                                                          │
   │ GET /resource  Authorization: Bearer AT₁                                 │
@@ -276,7 +276,7 @@ Client                        JwtAuthFilter        AuthService              Redi
   │ POST /refresh-token   Cookie: RT₁                                        │
   │ ───────────────────────────────────────────►  refreshToken()            │
   │                                                bước 4: jti(RT₁)==current?│ ✓ khớp
-  │                                                rotation ────────────────►│ refreshJtiCurrent=jti(RT₂)
+  │                                                rotation ────────────────►│ currentRefreshJti=jti(RT₂)
   │ ◄─────────────────────────────────────────── 200 {code:4001, AT₂}       │
   │  Set-Cookie: RT₂                                                          │
   │                                                                          │
@@ -301,7 +301,7 @@ Client                        JwtAuthFilter        AuthService              Redi
                    │  createSession
                    ▼
              ┌───────────┐   refresh (jti khớp)
-             │  ACTIVE   │─────────────────────────┐  cập nhật refreshJtiCurrent
+             │  ACTIVE   │─────────────────────────┐  cập nhật currentRefreshJti
              │           │◄─────────────────────────┘  (vẫn ACTIVE)
              └─────┬─────┘
         ┌──────────┼──────────────┬────────────────────┐
@@ -317,7 +317,7 @@ Client                        JwtAuthFilter        AuthService              Redi
 
 | Trạng thái | Ý nghĩa | AT thuộc phiên | RT thuộc phiên |
 |---|---|---|---|
-| `ACTIVE` | Phiên hợp lệ | Dùng được nếu còn hạn + không blacklist | RT hiện hành (khớp `refreshJtiCurrent`) dùng được |
+| `ACTIVE` | Phiên hợp lệ | Dùng được nếu còn hạn + không blacklist | RT hiện hành (khớp `currentRefreshJti`) dùng được |
 | `REVOKED` | Bị thu hồi do reuse | Bị chặn (`3012`) | Bị chặn (`3012` / `2010`) |
 | *(không tồn tại)* | Đã logout hoặc hết TTL | Bị chặn (`2010` / `3012`) | Bị chặn (`2010` / `3012`) |
 
@@ -343,8 +343,8 @@ Client                        JwtAuthFilter        AuthService              Redi
 | 4001 | LOGIN_SUCCESS | 200 | Refresh thành công (tái dùng mã của login) |
 | 3009 | UNAUTHORIZED | 401 | Cookie rỗng / parse lỗi / `isTokenValid` sai |
 | 2010 | TOKEN_REVOKED | 401 | `jti ∈ blacklist:refresh:*` (thường sau logout) |
-| 3012 | SESSION_INACTIVE | 401 | Session không tồn tại / không `ACTIVE` / thiếu `refreshJtiCurrent` |
-| 3013 | TOKEN_REUSE_DETECTED | 401 | `jti ≠ refreshJtiCurrent` (replay RT đã bị thay thế) |
+| 3012 | SESSION_INACTIVE | 401 | Session không tồn tại / không `ACTIVE` / thiếu `currentRefreshJti` |
+| 3013 | TOKEN_REUSE_DETECTED | 401 | `jti ≠ currentRefreshJti` (replay RT đã bị thay thế) |
 | 2007 / 2005 | ACCOUNT_BANNED / USER_INACTIVE | 403 | User bị ban / chưa active |
 | 2001 | USER_NOT_FOUND | 404 | User biến mất khỏi DB |
 
@@ -358,7 +358,7 @@ Client                        JwtAuthFilter        AuthService              Redi
 |---|---|
 | **Session TTL fixed-window** | Session hết hạn đúng 7 ngày kể từ login gốc, không gia hạn khi refresh. RT mới có `exp` xa hơn nhưng vô nghĩa một khi session bị xóa. Đây là "trần cứng" tuổi thọ phiên — quyết định thiết kế, không phải bug. |
 | **AT cũ không bị vô hiệu khi refresh** | Sau rotation, AT cũ vẫn dùng được đến khi hết hạn tự nhiên (phần còn lại của 15 phút) hoặc session chết. Refresh không nhận AT nên không thể blacklist nó. |
-| **Refresh không kiểm `deviceId`** | `JwtAuthFilter` kiểm `deviceId` (`3016`) nhưng `refreshToken()` thì không. RT bị đánh cắp có thể refresh từ thiết bị khác nếu `jti` còn khớp `refreshJtiCurrent`; chỉ AT phát sinh sau đó mới bị filter chặn khi request tiếp theo. Điểm bất đối xứng nên cân nhắc siết. |
+| **Refresh không kiểm `deviceId`** | `JwtAuthFilter` kiểm `deviceId` (`3016`) nhưng `refreshToken()` thì không. RT bị đánh cắp có thể refresh từ thiết bị khác nếu `jti` còn khớp `currentRefreshJti`; chỉ AT phát sinh sau đó mới bị filter chặn khi request tiếp theo. Điểm bất đối xứng nên cân nhắc siết. |
 | **Reuse detection "chặt"** | Client refresh nhưng mất response rồi retry bằng RT cũ sẽ bị coi là replay → `REVOKED` oan. Chưa có grace-window chấp nhận `jti` liền trước. |
 | **Nhánh `2010`/`2001` không xóa cookie** | Trong `refreshToken()`, hai nhánh này không gọi `clearRefreshTokenCookie` (khác 3009/3012/3013). Không phải lỗ hổng nhưng thiếu nhất quán. |
 | **`user:sessions:{userId}` tích rác** | Session hết TTL không tự gỡ `sessionId` khỏi set này (chỉ logout mới gỡ). Cần lọc bằng `hasKey` nếu xây tính năng liệt kê thiết bị. |

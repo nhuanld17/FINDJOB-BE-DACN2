@@ -91,10 +91,18 @@ public enum ErrorCode {
     NOTIFICATION_NOT_FOUND(2028, "Notification not found", HttpStatus.NOT_FOUND),
 
     // ===== ATS =====
-    ATS_CV_EMPTY(2041, "CV is empty or unreadable — only text-based PDF/DOCX are supported", HttpStatus.BAD_REQUEST),
+    // ⚠️ KHÔNG dùng AppException customMessage — mỗi tình huống 1 error code riêng
+    // (tách từ ATS_CV_EMPTY để message cụ thể cho từng case).
+    // ⚠️ Số code cũ (2041-2044) GIỮ NGUYÊN — chỉ thêm mới từ 2045 (docs/test-cases hardcode số cũ).
+    ATS_CV_EMPTY(2041, "CV is empty or unreadable — only text-based PDF/DOCX are supported. Scanned images (photos of documents) are not supported", HttpStatus.BAD_REQUEST),
     ATS_CV_TOO_LARGE(2042, "CV exceeds maximum allowed size", HttpStatus.BAD_REQUEST),
     ATS_PROVIDER_ERROR(2043, "AI scoring service is temporarily unavailable, please try again later", HttpStatus.SERVICE_UNAVAILABLE),
     ATS_MISSING_INPUT(2044, "Either jobId or jdText must be provided", HttpStatus.BAD_REQUEST),
+    ATS_CV_REQUIRED(2045, "CV file is required", HttpStatus.BAD_REQUEST),
+    ATS_CV_INVALID_NAME(2046, "CV file name is invalid", HttpStatus.BAD_REQUEST),
+    ATS_CV_UNSUPPORTED(2047, "Unsupported file format. Only PDF (.pdf) and Word (.docx) are supported", HttpStatus.BAD_REQUEST),
+    ATS_CV_UNREADABLE(2048, "Cannot read CV file", HttpStatus.BAD_REQUEST),
+    ATS_RESPONSE_PARSE_ERROR(2049, "AI response could not be parsed. Please try again.", HttpStatus.INTERNAL_SERVER_ERROR),
 
     // ===== System =====
     INTERNAL_ERROR(9999, "Internal server error", HttpStatus.INTERNAL_SERVER_ERROR),

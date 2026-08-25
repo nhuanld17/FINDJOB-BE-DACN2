@@ -30,7 +30,7 @@ public class JobQueryDSL {
 
     /**
      * Tìm kiếm job công khai với phân trang, bộ lọc và sắp xếp.
-     * <p>
+     * 
      * Luôn filter: isDeleted = false, status ∈ {ACTIVE, EXPIRED}, company chưa bị xoá.
      * Các filter khác (city, seniority, jobType, search) đều OPTIONAL.
      *
@@ -113,16 +113,16 @@ public class JobQueryDSL {
 
     /**
      * Liệt kê job dành cho COMPANY (chủ sở hữu) — màn hình "Quản lý tin tuyển dụng".
-     * <p>
+     * 
      * KEYSET PAGINATION: thay vì OFFSET, dùng mốc (lastCreatedAt, lastId) để lấy
      * các dòng SAU mốc — ổn định khi dữ liệu đổi giữa chừng, luôn nhanh (index).
      * Sort CỐ ĐỊNH: created_at DESC, id DESC (mới nhất lên đầu).
-     * <ul>
-     *   <li>statuses rỗng/null → trả TẤT CẢ status (ACTIVE/EXPIRED/DRAFT/CLOSED)</li>
-     *   <li>search → tìm theo title (không phân biệt hoa/thường)</li>
-     *   <li>lastCreatedAt/lastId null → trang đầu</li>
-     *   <li>Trả {@code limit + 1} dòng để service biết còn trang sau hay không</li>
-     * </ul>
+     * 
+     *   - statuses rỗng/null → trả TẤT CẢ status (ACTIVE/EXPIRED/DRAFT/CLOSED)
+     *   - search → tìm theo title (không phân biệt hoa/thường)
+     *   - lastCreatedAt/lastId null → trang đầu
+     *   - Trả {@code limit + 1} dòng để service biết còn trang sau hay không
+     * 
      *
      * @param companyId     ID công ty (từ JWT — userId → company)
      * @param statuses      Danh sách status cần lọc (rỗng/null = tất cả)
@@ -177,7 +177,7 @@ public class JobQueryDSL {
 
     /**
      * Chuyển {@link Pageable#getSort()} thành danh sách {@link OrderSpecifier} cho query.
-     * <p>
+     * 
      * Chỉ chấp nhận các field WHITELIST (an toàn, tránh SQL injection qua sort);
      * field không nằm trong whitelist → mặc định sắp theo createdAt giảm dần.
      *

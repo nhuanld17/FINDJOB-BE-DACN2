@@ -8,7 +8,7 @@ import java.time.Instant;
 /**
  * DTO trả về khi COMPANY xem danh sách ứng viên đã apply vào 1 job (list view).
  * Chỉ gồm thông tin cơ bản để nhận diện ứng viên: tên, avatar, email.
- * <p>
+ * 
  * Nếu employee có isPublic = false, thông tin cá nhân sẽ được ẩn (null).
  */
 @Builder

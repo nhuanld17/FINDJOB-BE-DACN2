@@ -131,16 +131,7 @@ public class AuthController {
         return ResponseEntity.ok(APIResponse.success(response));
     }
 
-    /**
-     * Google Login — Mobile dùng accessToken từ expo-auth-session để đăng nhập.
-     * <p>
-     * <b>DEPRECATED:</b> Chuyển sang dùng {@link #exchangeTicket(ExchangeTicketRequest, HttpServletRequest, HttpServletResponse)}.
-     * Endpoint này gọi Google Token Info API (sắp bị Google shutdown),
-     * không hỗ trợ PKCE, dễ bị token substitution nếu không verify aud/azp.
-     * Mobile mới nên dùng OIDC flow (exchange-ticket) thay thế.
-     *
-     * @deprecated Dùng exchangeTicket() thay thế.
-     */
+
     @Deprecated
     @PostMapping("/google-login")
     public ResponseEntity<APIResponse<AuthResponse>> googleLogin(

@@ -8,25 +8,25 @@ import org.springframework.security.oauth2.core.oidc.user.DefaultOidcUser;
 import java.util.Collection;
 
 /**
- * <h2>CustomOidcUser — OidcUser mở rộng chứa userId local</h2>
+ * CustomOidcUser — OidcUser mở rộng chứa userId local
  *
- * <h3>Vai trò:</h3>
+ * Vai trò:
  * Khi user đăng nhập bằng Google (OIDC), Spring Security tự động tạo ra một
  * {@link org.springframework.security.oauth2.core.oidc.user.DefaultOidcUser}
  * với các thông tin từ Google (sub, email, name, picture…).
- * Tuy nhiên {@code DefaultOidcUser} <b>chỉ chứa thông tin từ Google</b> —
+ * Tuy nhiên {@code DefaultOidcUser} chỉ chứa thông tin từ Google —
  * nó không biết user đó có tồn tại trong DB local hay không,
  * userId local là bao nhiêu.
- * <p>
+ * 
  * {@code CustomOidcUser} giải quyết vấn đề đó: nó kế thừa {@code DefaultOidcUser}
- * và <b>thêm 2 trường</b>:
- * <ul>
- *   <li>{@code userId} — ID của user trong DB local (bảng {@code users})</li>
- *   <li>{@code email} — Email của user (dùng làm subject cho JWT sau này)</li>
- * </ul>
+ * và thêm 2 trường:
+ * 
+ *   - {@code userId} — ID của user trong DB local (bảng {@code users})
+ *   - {@code email} — Email của user (dùng làm subject cho JWT sau này)
+ * 
  *
- * <h3>Luồng hoạt động:</h3>
- * <pre>
+ * Luồng hoạt động:
+ * 
  * Google Login (OIDC)
  *      ↓
  * CustomOidcUserService.loadUser()
@@ -36,14 +36,14 @@ import java.util.Collection;
  * OidcLoginSuccessHandler.onAuthenticationSuccess()
  *      ↓  (đọc userId + email từ CustomOidcUser)
  * Tạo JWT token, set cookie, redirect về FE với ticket
- * </pre>
+ * 
  *
- * <h3>Tại sao cần class này?</h3>
+ * Tại sao cần class này?
  * Nếu chỉ dùng {@code DefaultOidcUser} nguyên bản, sau khi Google xác thực xong,
  * ta chỉ biết email Google của user — không biết userId local để tạo JWT,
  * kiểm tra role, truy vấn dữ liệu liên quan. Class này là "cầu nối" giữa
  * thông tin OIDC từ Google và thông tin user trong DB local.
- * <p>
+ * 
  * Ngoài ra, {@link #getName()} override trả về {@code email} thay vì {@code sub}
  * để JWT token sau này dùng email làm subject — nhất quán với form login.
  *

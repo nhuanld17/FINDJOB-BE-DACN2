@@ -74,7 +74,7 @@ Không có request body.
    biết chắc `sessionId`/`username` thật sự là gì.
 5. **Kiểm tra `session:{sessionId}` có tồn tại không** (`hasKey`). Không tồn tại → return ngay
    (session đã chết từ trước, không có gì để xóa thêm).
-6. **Đọc `refreshJtiCurrent`** từ session (có thể `null` nếu field bị thiếu — vẫn tiếp tục, chỉ
+6. **Đọc `currentRefreshJti`** từ session (có thể `null` nếu field bị thiếu — vẫn tiếp tục, chỉ
    là sẽ không blacklist được RT ở bước sau).
 7. **Nếu có `accessToken`**: thử `extractJti` + `remainingTimeOf`; lỗi thì `catch (ignored)` —
    AT hỏng/hết hạn thì bỏ qua, **không** làm gián đoạn phần còn lại của logout.
@@ -109,7 +109,7 @@ nhánh dừng sớm đều kết thúc bằng `return` (thành công)**, chưa t
 ## 5. Điểm đặc biệt: blacklist "RT nào"?
 
 Điểm dễ bị đọc lướt qua: RT bị đưa vào blacklist ở bước 11 **không phải** `jti` trích trực tiếp từ
-`refreshToken` mà client gửi lên, mà là **`refreshJtiCurrent` đang lưu trong session** (bước 6).
+`refreshToken` mà client gửi lên, mà là **`currentRefreshJti` đang lưu trong session** (bước 6).
 
 Trong đại đa số trường hợp hai giá trị này **giống nhau** (client gửi đúng RT mới nhất, session
 cũng đang trỏ tới đúng RT đó). Nhưng về mặt thiết kế, đây là lựa chọn có chủ đích: **logout luôn

@@ -23,9 +23,10 @@ Mỗi test có sẵn **JSON body để copy**. Code hiện tại trả trạng t
 | resend-otp | POST | `http://localhost:8080/api/v1/auth/resend-otp` |
 | login | POST | `http://localhost:8080/api/v1/auth/login` |
 
-**Cookie:**
-- `pendingToken` (phiên OTP): httpOnly, path `/`, MaxAge 600s (10 phút). Postman tự lưu & gửi lại giữa register → verify/resend.
-- `refreshToken` (đăng nhập): chỉ xuất hiện khi login **thành công** (tài khoản active).
+**Dual-mode auth (Web cookie / Mobile header):**
+- **Web:** cookie `pendingToken` (httpOnly, path `/`, MaxAge 600s) — Postman tự lưu & gửi lại giữa register → verify/resend.
+- **Mobile:** header `X-Pending-Token: <token>` (lấy từ `data.pendingToken` trong response register/login-inactive). Server ưu tiên header, fallback cookie.
+- `refreshToken` cookie: chỉ xuất hiện khi login **thành công** (tài khoản active); mobile nhận `data.refreshToken` trong body.
 
 **Hằng số OTP:** OTP TTL 300s · cooldown 60s · attempts window 3600s (MAX_ATTEMPTS=5) · MAX_WRONG=5 · pending 600s.
 
@@ -56,16 +57,33 @@ redis-cli DEL otp:<id> otp:wrong:<id> otp:attempts:<id> otp:cooldown:<id> pendin
 
 **Body chuẩn dùng lại nhiều lần:**
 
-Register hợp lệ:
+Register hợp lệ (USER):
 ```json
 {
   "username": "alice01",
   "email": "alice@example.com",
   "password": "Password123",
   "confirmPassword": "Password123",
-  "fullName": "Alice Nguyen"
+  "fullName": "Alice Nguyen",
+  "accountType": "USER",
+  "companyName": null
 }
 ```
+
+Register hợp lệ (EMPLOYER — bắt buộc `companyName`):
+```json
+{
+  "username": "acme01",
+  "email": "hr@acme.com",
+  "password": "Password123",
+  "confirmPassword": "Password123",
+  "fullName": "ACME HR",
+  "accountType": "EMPLOYER",
+  "companyName": "ACME Corp"
+}
+```
+
+> ⚠️ `accountType` (enum từ `AccountType.java`): `USER` / `EMPLOYER` (mặc định USER). `companyName` **bắt buộc khi accountType = EMPLOYER** (thiếu → `2013 COMPANY_NAME_REQUIRED`). Sau verify OTP thành công, backend **tự tạo** Employee (USER) hoặc Company (EMPLOYER) — xem contract `03-register-otp.md`.
 Login:
 ```json
 {

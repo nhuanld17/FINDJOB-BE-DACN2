@@ -1,10 +1,10 @@
 <div align="center">
 
-# 🚀 Spring Boot Boilerplate
+# 🚀 FIND JOB — Spring Boot Backend
 
-**A production-ready Spring Boot 3.4 boilerplate with JWT auth, OTP verification, OAuth2/OIDC (Google), Redis session management, and more.**
+**A production-ready Spring Boot 3.5 backend for the FIND JOB platform: JWT auth, OTP verification, OAuth2/OIDC (Google), Redis session management, job platform (jobs, applications, companies, employees, saved jobs, follows, reviews) and AI-powered ATS CV scoring.**
 
-[![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.4.2-6DB33F?logo=spring-boot)](https://spring.io/projects/spring-boot)
+[![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.5.16-6DB33F?logo=spring-boot)](https://spring.io/projects/spring-boot)
 [![Java](https://img.shields.io/badge/Java-21-ED8B00?logo=java)](https://www.oracle.com/java/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis)](https://redis.io/)
@@ -44,6 +44,8 @@ Toàn bộ tài liệu kỹ thuật đã được tổ chức lại trong thư m
 | [`docs/03-api-contracts/`](docs/03-api-contracts/) | 📋 API Contracts cho FE |
 | [`docs/04-test-cases/`](docs/04-test-cases/) | 🧪 Test Cases (auth, AT/RT, manual test template) |
 | [`docs/05-plans/`](docs/05-plans/) | 📝 Development Plans (OIDC integration) |
+| [`docs/06-revoke-token/`](docs/06-revoke-token/) | 🔁 Token Revocation (blacklist, reuse detection) |
+| [`docs/database-design/`](docs/database-design/) | 🗄️ Database Design |
 | [`docs/notes/`](docs/notes/) | 📓 Ghi chú (SonarQube setup) |
 
 ---
@@ -52,12 +54,22 @@ Toàn bộ tài liệu kỹ thuật đã được tổ chức lại trong thư m
 
 ### 🔐 Authentication
 - **Register** with email verification via OTP
-- **Login** with username/email + password
+- **Login** with email + password
 - **OTP** (One-Time Password) sent via email with cooldown & rate limiting
 - **JWT** access token (short-lived) + refresh token (long-lived, HttpOnly cookie)
 - **Refresh token** rotation with reuse detection
 - **Logout** with token blacklisting & session invalidation
 - **Google OAuth2 / OIDC** login with one-time ticket exchange
+- **Change Password** — dual-mode: user có password phải nhập mật khẩu cũ, user Google (password = NULL) chỉ cần đặt mới
+
+### 💼 Job Platform
+- **Jobs** — CRUD, tìm kiếm (search/filter/sort), phân trang keyset, đổi status (ACTIVE/EXPIRED/DRAFT/CLOSED — EXPIRED do scheduler auto-set khi hết hạn)
+- **Applications** — ứng tuyển kèm CV file, huỷ ứng tuyển, recruiter đổi status, email tự động khi ACCEPTED/REJECTED
+- **Companies** — hồ sơ công ty, stats, review (1 lần/công ty), follow/unfollow
+- **Employees** — hồ sơ (skills/experiences/education/certificates), chế độ public/private
+- **Saved Jobs** — lưu job để ứng tuyển sau
+- **Categories** — danh mục job (seed sẵn)
+- **ATS (AI)** — chấm CV bằng Groq LLM, cache SHA-256 TTL 24h
 
 ### 🛡️ Security
 - BCrypt password encoding
@@ -84,18 +96,22 @@ Toàn bộ tài liệu kỹ thuật đã được tổ chức lại trong thư m
 | Category | Technology | Version |
 |----------|-----------|---------|
 | **Language** | Java | 21 |
-| **Framework** | Spring Boot | 3.4.2 |
+| **Framework** | Spring Boot | 3.5.16 |
 | **Security** | Spring Security + JWT (jjwt) | 0.12.6 |
 | **OAuth2** | Spring Security OAuth2 Client | — |
 | **Database** | PostgreSQL | 16 |
 | **Cache/Session** | Redis | 7 |
 | **ORM** | Spring Data JPA / Hibernate | — |
+| **QueryDSL** | QueryDSL JPA (OpenFeign fork — fix CVE-2024-49203) | 6.10.1 |
 | **Migration** | Flyway | — |
 | **Mail** | Spring Mail + Thymeleaf | — |
 | **API Docs** | SpringDoc OpenAPI (Swagger) | 2.8.4 |
+| **File Storage** | Cloudinary SDK | 2.3.2 |
+| **PDF/Word Parsing** | Apache PDFBox + Apache POI | 2.0.37 / 5.4.0 |
+| **AI (ATS)** | Spring AI + Groq (model configurable — `application.yml` hiện dùng `openai/gpt-oss-120b`, fallback `llama-3.3-70b-versatile`) | 1.1.0 |
 | **Build** | Maven | — |
 | **Code Gen** | Lombok + MapStruct | 1.6.3 |
-| **Testing** | JUnit 5 + Testcontainers | — |
+| **Testing** | JUnit 5 + Testcontainers | 1.19.8 |
 | **Monitoring** | Spring Boot Actuator | — |
 
 ---
@@ -132,17 +148,19 @@ com.example.boilerplate/
 │   ├── response/         → APIResponse<T>, ErrorResponse (standard API format)
 │   └── util/             → RequestUtils (IP, User-Agent extraction)
 ├── features/             ← Business features grouped by domain
-│   ├── auth/             → Register, Login, OTP, Refresh, Logout, OIDC exchange
-│   │   ├── controller/   → AuthController
-│   │   ├── dto/          → Request/Response DTOs
-│   │   └── service/      → AuthService + impl
-│   └── user/             → User entity, Role entity, repositories
-│       ├── entity/       → User.java, Role.java
-│       ├── repository/   → UserRepository, RoleRepository
-│       └── service/      → UserService
+│   ├── auth/             → Register, Login, OTP, Refresh, Logout, ChangePassword, OIDC exchange
+│   ├── user/             → User entity, Role entity, repositories
+│   ├── job/              → Jobs (CRUD, search, keyset pagination), Categories
+│   ├── company/          → Company profiles, stats, Reviews
+│   ├── employee/         → Employee profiles, Saved Jobs, Follows, Certificates
+│   ├── application/      → Apply, cancel, recruiter status flow, emails
+│   ├── ats/              → AI CV scoring (Groq) + file parsing
+│   └── notification/     → Notification entity + repository
 └── infrastructure/       ← Technical infrastructure
-    ├── mail/             → EmailService (async OTP/welcome emails)
+    ├── mail/             → EmailService (async OTP/welcome/application emails)
     ├── redis/            → RedisService (session, blacklist, OTP state)
+    ├── cloudinary/       → CloudinaryService (file upload — CV, logo, avatar, cover)
+    ├── scheduler/        → JobExpiryScheduler (auto-expire job hết hạn, daily 00:00)
     └── security/         ← Security layer
         ├── jwt/          → JwtAuthFilter, JwtUtil, JwtAccessDeniedHandler, JwtAuthEntryPoint
         ├── oauth2/       → CustomOidcUserService, CustomOidcUser, handlers
@@ -197,9 +215,24 @@ REDIS_PORT=6379
 REDIS_PASSWORD=
 REDIS_DATABASE=1
 
-# Optional: Google OAuth2
+# Cloudinary (file upload — avatar, cover, CV)
+CLOUDINARY_CLOUD_NAME=your_cloud_name
+CLOUDINARY_API_KEY=your_api_key
+CLOUDINARY_API_SECRET=your_api_secret
+
+# Google OAuth2
 GOOGLE_CLIENT_ID=your_google_client_id
 GOOGLE_CLIENT_SECRET=your_google_client_secret
+
+# Mobile OAuth2 redirect schemes (findjob:// production, exp:// Expo Go dev)
+APP_OAUTH2_ALLOWED_MOBILE_SCHEMES=findjob://,exp://
+
+# ATS AI scoring (Groq)
+GROQ_API_KEY=your_groq_api_key
+
+# Seed jobs (dev/test)
+SEED_JOBS_ENABLED=true
+SEED_JOBS_PER_COMPANY=45
 ```
 
 ### Step 2: Start Infrastructure
@@ -256,6 +289,13 @@ curl http://localhost:8080/actuator/health
 | `GOOGLE_CLIENT_ID` | ❌ | — | Google OAuth2 Client ID |
 | `GOOGLE_CLIENT_SECRET` | ❌ | — | Google OAuth2 Client Secret |
 | `APP_OAUTH2_REDIRECT_URL` | ❌ | `http://localhost:5173/oauth-callback` | OAuth2 frontend redirect |
+| `APP_OAUTH2_ALLOWED_MOBILE_SCHEMES` | ❌ | `findjob://` | Mobile redirect schemes (phân cách bằng dấu phẩy) |
+| `CLOUDINARY_CLOUD_NAME` | ✅ | — | Cloudinary cloud name (file upload) |
+| `CLOUDINARY_API_KEY` | ✅ | — | Cloudinary API key |
+| `CLOUDINARY_API_SECRET` | ✅ | — | Cloudinary API secret |
+| `GROQ_API_KEY` | ❌ | — | Groq API key cho ATS CV scoring |
+| `SEED_JOBS_ENABLED` | ❌ | `true` | Bật seeder job khi start app (dev/test) |
+| `SEED_JOBS_PER_COMPANY` | ❌ | `45` | Số job seed cho mỗi công ty |
 
 ### Application Properties (application.yml)
 
@@ -281,10 +321,14 @@ Base URL: `http://localhost:8080/api/v1/auth`
 | `POST` | `/register` | Register new user (sends OTP email) | ❌ |
 | `POST` | `/verify-otp` | Verify OTP code to activate account | ❌ |
 | `POST` | `/resend-otp` | Resend OTP email | ❌ |
-| `POST` | `/login` | Login with username/password | ❌ |
-| `POST` | `/refresh-token` | Refresh access token (uses cookie) | ❌ |
-| `POST` | `/logout` | Logout (blacklists token, clears session) | ❌ |
-| `POST` | `/exchange-ticket` | Exchange OAuth2 one-time ticket for JWT | ❌ |
+| `POST` | `/login` | Login with email/password (deviceId + deviceName bắt buộc) | ❌ |
+| `POST` | `/refresh-token` | Refresh access token — **dual-mode**: cookie (web) hoặc body `{refreshToken}` (mobile) | ❌ |
+| `POST` | `/logout` | Logout (blacklists token, clears session) — dual-mode cookie/body | ❌ |
+| `POST` | `/exchange-ticket` | Exchange OAuth2 one-time ticket for JWT (mobile OIDC) | ❌ |
+| `POST` | `/change-password` | Đổi/đặt mật khẩu (Google user không cần oldPassword) | ✅ |
+| `POST` | `/google-login` | **DEPRECATED** — dùng `exchange-ticket` thay thế | ❌ |
+
+> 📌 Bảng trên chỉ liệt kê **auth**. Toàn bộ business endpoints (Jobs, Applications, Companies, Employees, Saved Jobs, Follows, Reviews, ATS...) xem **API Contracts** tại [`docs/03-api-contracts/`](docs/03-api-contracts/).
 
 ### Example Requests
 
@@ -299,9 +343,12 @@ curl -X POST http://localhost:8080/api/v1/auth/register \
     "password": "StrongP@ss123",
     "confirmPassword": "StrongP@ss123",
     "fullName": "John Doe",
-    "deviceId": "550e8400-e29b-41d4-a716-446655440000",
-    "deviceName": "Chrome on Windows"
+    "accountType": "USER",
+    "companyName": null
   }'
+
+# accountType (enum): USER / EMPLOYER — companyName BẮT BUỘC khi accountType = EMPLOYER
+# (deviceId/deviceName chỉ dùng ở /login, không có trong register)
 ```
 
 #### Login
@@ -310,20 +357,29 @@ curl -X POST http://localhost:8080/api/v1/auth/register \
 curl -X POST http://localhost:8080/api/v1/auth/login \
   -H "Content-Type: application/json" \
   -d '{
-    "username": "johndoe",
+    "email": "john@example.com",
     "password": "StrongP@ss123",
     "deviceId": "550e8400-e29b-41d4-a716-446655440000",
     "deviceName": "Chrome on Windows"
   }'
+
+# Lưu ý: /login dùng email (không phải username); deviceId + deviceName bắt buộc
 ```
 
 #### Verify OTP
 
 ```bash
+# Web: gửi pendingToken qua cookie
 curl -X POST http://localhost:8080/api/v1/auth/verify-otp \
   -H "Content-Type: application/json" \
   -d '{"otp": "123456"}' \
   --cookie "pendingToken=xxx"
+
+# Mobile: gửi qua header X-Pending-Token (dual-mode)
+curl -X POST http://localhost:8080/api/v1/auth/verify-otp \
+  -H "Content-Type: application/json" \
+  -H "X-Pending-Token: xxx" \
+  -d '{"otp": "123456"}'
 ```
 
 ### Response Format
@@ -334,10 +390,13 @@ curl -X POST http://localhost:8080/api/v1/auth/verify-otp \
   "code": 1000,
   "message": "Success",
   "data": {
-    "accessToken": "eyJhbGciOiJIUzI1NiJ9...",
-    "userId": 1,
+    "code": 4001,
+    "id": 1,
     "username": "johndoe",
-    "roles": ["ROLE_USER"]
+    "roles": [ { "id": 1, "name": "USER" } ],
+    "accessToken": "eyJhbGciOiJIUzUxMiJ9...",
+    "refreshToken": "eyJhbGciOiJIUzUxMiJ9...",  // LUÔN có trong body — web dùng cookie HttpOnly, mobile lưu Keychain
+    "hasPassword": true                          // false với user Google (password = NULL)
   }
 }
 ```
@@ -372,11 +431,18 @@ User                    Frontend                  Backend                 Redis 
  │                        │── POST /verify-otp ────►│                      │              │
  │                        │                         │── Verify OTP ───────►│              │
  │                        │                         │── Activate user ─────│              │
- │                        │                         │── Generate JWT ─────►│              │
+ │                        │◄─ VerifyOtpResponse     │                      │              │
+ │                        │   (code 3001)           │                      │              │
+ │◄─ Điều hướng về Login ─│                         │                      │              │
+ │                        │                         │                      │              │
+ │                        │── POST /login ─────────►│                      │              │
+ │                        │                         │── Tạo session + JWT ─│              │
  │                        │◄─ Set-Cookie:           │                      │              │
  │                        │   refreshToken          │                      │              │
  │◄─ Access token ────────│                         │                      │              │
 ```
+
+> ⚠️ `verify-otp` **KHÔNG trả token** — chỉ kích hoạt tài khoản (code `3001`). User đăng nhập lại bằng `/login` để nhận access/refresh token.
 
 ### Login Flow (Inactive → OTP Verification)
 
@@ -391,14 +457,21 @@ User                    Frontend                  Backend
  │                        │◄─ LoginInactiveResponse │
  │                        │   + pendingToken cookie │
  │                        │   + OTP info            │
- │                        │                         │
- │── Verify OTP ─────────►│                         │
- │                        │── POST /verify-otp ────►│
- │                        │                         │── OTP correct?
- │                        │                         │── Activate + generate JWT
- │                        │◄─ AuthResponse          │
- │◄─ Access token         │   + refreshToken cookie │
+ │                        │                         ││── Verify OTP ─────────►│                         │
+│                        │── POST /verify-otp ────►│
+│                        │                         │── OTP correct?
+│                        │                         │── Activate account
+│                        │◄─ VerifyOtpResponse     │
+│                        │   (code 3001 — KHÔNG trả token)
+│                        │                         │
+│── Login lại ──────────►│                         │
+│                        │── POST /login ─────────►│
+│                        │                         │── Tạo session + JWT
+│                        │◄─ AuthResponse          │
+│◄─ Access token         │   + refreshToken cookie │
 ```
+
+> ⚠️ Cả register lẫn login-inactive đều **KHÔNG cấp token ở bước verify-otp** — user phải đăng nhập lại bằng `/login` để nhận access/refresh token.
 
 ### Refresh Token Flow
 
@@ -406,8 +479,8 @@ User                    Frontend                  Backend
 User                    Frontend                  Backend                 Redis
  │                        │                         │                      │
  │── Call API ───────────►│                         │                      │
- │                        │── POST /refresh-token ──►│                      │
- │                        │   (cookie: refreshToken) │                      │
+│                        │── POST /refresh-token ──►│                      │
+│                        │   (web: cookie / mobile: body {refreshToken})    │
  │                        │                         │── Decode RT          │
  │                        │                         │── Check blacklist ──►│
  │                        │                         │── Check session ────►│
@@ -422,9 +495,9 @@ User                    Frontend                  Backend                 Redis
 User                    Frontend                  Backend                 Redis
  │                        │                         │                      │
  │── Logout ─────────────►│                         │                      │
- │                        │── POST /logout ────────►│                      │
- │                        │   (cookie: refreshToken) │                      │
- │                        │   (header: Bearer AT)    │                      │
+│                        │── POST /logout ────────►│                      │
+│                        │   (web: cookie / mobile: body {refreshToken})    │
+│                        │   (header: Bearer AT)    │                      │
  │                        │                         │── Blacklist AT ─────►│
  │                        │                         │── Blacklist RT ─────►│
  │                        │                         │── Remove session ───►│
@@ -501,10 +574,10 @@ Content-Type: application/json
 
 | Measure | Implementation |
 |---------|---------------|
-| One-time ticket | Atomic `GETDEL` (Lua script) prevents replay attacks |
+| One-time ticket | Atomic `GETDEL` (Redis command) prevents replay attacks |
 | Ticket TTL | 60 seconds — short window for misuse |
 | Email verification | `email_verified` claim must be `true` (prevents account takeover) |
-| Random password | OIDC users get an unrecoverable random hash — password login impossible |
+| Password = NULL | OIDC users có `password = NULL` (V15) — không có mật khẩu giả; dùng flow "đặt mật khẩu lần đầu" khi đổi mật khẩu |
 | AuthProvider preserved | Existing LOCAL users keep `authProvider=LOCAL` after linking Google |
 | Auto-activation | Inactive LOCAL users are auto-activated on first Google login |
 | Log safety | Only 8 characters of ticket logged — no credential leak |
@@ -517,22 +590,24 @@ Content-Type: application/json
 
 | Aspect | Implementation |
 |--------|---------------|
-| **Access Token** | JWT, short-lived (default 15 min), contains userId + roles + sessionId |
-| **Refresh Token** | JWT, long-lived (default 7 days), stored in HttpOnly cookie |
-| **Token Rotation** | Each refresh generates a new refresh token + invalidates the old one |
+| **Access Token** | JWT, short-lived (default 15 min), claims: username (sub) + roles + sessionId + deviceId + jti |
+| **Refresh Token** | JWT, long-lived (default 7 days), cookie HttpOnly (web) hoặc body `{refreshToken}` (mobile) |
+| **Token Rotation** | Mỗi lần refresh cấp RT mới (jti mới) và cập nhật `currentRefreshJti` trong session — RT cũ **không blacklist** nhưng jti không còn khớp nên vô hiệu; replay RT cũ → reuse detection |
 | **Reuse Detection** | If a used refresh token is presented again → all tokens for that family are revoked |
 | **Blacklisting** | Both AT and RT are blacklisted in Redis on logout |
 | **Session Management** | Each login creates a Redis session; sessions are tracked per user |
 
 ### Security Headers
 
+> ℹ️ Các header dưới đây **không được cấu hình thủ công** trong `SecurityConfig` — chúng là mặc định của Spring Security 6 (cộng với `Set-Cookie` do app tự set qua `ResponseCookie`). Nếu cần chặt hơn (CSP, HSTS, Referrer-Policy...), phải thêm `.headers()` vào security filter chain.
+
 | Header | Value |
 |--------|-------|
-| `Set-Cookie` (refreshToken) | `HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=604800` |
-| `X-Content-Type-Options` | `nosniff` |
-| `X-Frame-Options` | `DENY` |
-| `X-XSS-Protection` | `0` |
-| `Cache-Control` | `no-cache, no-store, max-age=0, must-revalidate` |
+| `Set-Cookie` (refreshToken) | `HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=604800` (app tự set — `AuthServiceImplement.writeCookie`) |
+| `X-Content-Type-Options` | `nosniff` (Spring Security default) |
+| `X-Frame-Options` | `DENY` (Spring Security default) |
+| `X-XSS-Protection` | `0` (Spring Security default) |
+| `Cache-Control` | `no-cache, no-store, max-age=0, must-revalidate` (Spring Security default) |
 
 ### CORS
 
@@ -547,11 +622,21 @@ The project uses **Flyway** for database version control:
 
 ```
 src/main/resources/db/migration/
-├── V1__init_schema.sql           ← Core tables: roles, users, user_role
+├── V1__init_schema.sql            ← Core tables: roles, users, user_role
 ├── V2__normalize_role_enum_values.sql
 ├── V3__seed_e2e_test_accounts.sql
 ├── V4__add_unique_constraint_username.sql
-├── V5__add_oidc_fields.sql       ← OAuth2 fields (auth_provider, social_id, avatar_url)
+├── V5__add_oidc_fields.sql        ← OAuth2 fields (auth_provider, social_id, avatar_url)
+├── V6__create_job_platform_tables.sql  ← companies, employees, jobs, applications, saved_jobs...
+├── V7__employer_registration.sql
+├── V8__alter_years_of_experience_to_int.sql
+├── V9__add_city_enum.sql
+├── V10__seed_categories.sql
+├── V11__seed_missing_employee_profiles.sql
+├── V12__add_follower_count_to_companies.sql
+├── V13__create_company_reviews.sql
+├── V14__add_keyset_index_for_jobs_manage.sql
+├── V15__make_password_nullable_and_clean_oauth.sql
 ```
 
 ### Schema Overview
@@ -560,18 +645,20 @@ src/main/resources/db/migration/
 -- Roles
 roles (id BIGSERIAL PK, name VARCHAR UNIQUE)
 
--- Users
+-- Users (password NULL được từ V15 — user Google không có mật khẩu)
 users (
   id BIGSERIAL PK,
   username VARCHAR NOT NULL UNIQUE,
   email VARCHAR NOT NULL UNIQUE,
-  password VARCHAR NOT NULL,
+  password VARCHAR,                        ← NULL (V15): user Google
   full_name VARCHAR,
   is_active BOOLEAN DEFAULT false,
   is_deleted BOOLEAN DEFAULT false,
   auth_provider VARCHAR(20) DEFAULT 'LOCAL',
   social_id VARCHAR(200),
   avatar_url VARCHAR(500),
+  pending_account_type VARCHAR(20),        ← V7: USER / EMPLOYER (intent lúc đăng ký)
+  pending_company_name VARCHAR(255),       ← V7: tên công ty nếu đăng ký COMPANY
   created_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ
 )
@@ -584,22 +671,21 @@ user_role (user_id FK, role_id FK, PRIMARY KEY)
 
 ## 🧪 Testing
 
+> ⚠️ **Trạng thái thật:** repo hiện chỉ có **1 test class** (`BoilerplateApplicationTests`) với 1 test `contextLoads()` rỗng (kiểm tra context khởi tạo được). Các dependency Testcontainers / Spring Security Test **đã khai báo** trong `pom.xml` nhưng **chưa có test nào sử dụng** — `./mvnw test` hiện không kiểm thử nghiệp vụ.
+
 ```bash
-# Run all tests
+# Chạy test (hiện chỉ có context-load test)
 ./mvnw test
 
-# Run with coverage
+# Chạy với coverage report (JaCoCo — phase verify)
 ./mvnw verify
-
-# Run specific test class
-./mvnw test -Dtest=AuthServiceTest
 ```
 
-The project includes:
+Dependencies testing đã khai báo:
 - **JUnit 5** — test framework
-- **Testcontainers** — PostgreSQL + Redis containers for integration tests
+- **Testcontainers** (`postgresql`, `junit-jupiter`) — sẵn sàng cho integration tests, chưa có test viết
 - **Spring Security Test** — `@WithMockUser`, `SecurityMockMvcRequestPostProcessors`
-- **JaCoCo** — code coverage reports at `target/site/jacoco/`
+- **JaCoCo** — code coverage report tại `target/site/jacoco/` (chạy ở phase `verify`)
 
 ---
 
@@ -611,12 +697,12 @@ The project includes:
 ./mvnw clean package -DskipTests
 ```
 
-Produces an executable JAR at `target/boilerplate-0.0.1-SNAPSHOT.jar`.
+Produces an executable JAR at `target/FINDJOB-BE-0.0.1-SNAPSHOT.jar`.
 
 ### Run
 
 ```bash
-java -jar target/boilerplate-0.0.1-SNAPSHOT.jar
+java -jar target/FINDJOB-BE-0.0.1-SNAPSHOT.jar
 ```
 
 ### Production Considerations
@@ -645,24 +731,25 @@ java -jar target/boilerplate-0.0.1-SNAPSHOT.jar
 │   │   ├── base/BaseEntity.java          ← JPA base (createdAt, updatedAt, deleted)
 │   │   ├── config/                       ← @Configuration classes
 │   │   ├── constant/                     ← Enums & constants
-│   │   ├── exception/                    ← Custom exceptions + handler
+│   │   ├── exception/                    ← AppException, GlobalExceptionHandler, CustomAuthException, AccountBannedException
 │   │   ├── response/                     ← Standardized API response models
 │   │   └── util/RequestUtils.java        ← HTTP request helpers
 │   │
 │   ├── features/                         ← Business features
-│   │   ├── auth/                         ← Authentication
-│   │   │   ├── controller/AuthController.java
-│   │   │   ├── dto/request/              ← Register, Login, VerifyOtp, ExchangeTicket
-│   │   │   └── dto/response/             ← AuthResponse, LoginInactiveResponse, etc.
-│   │   │   └── service/                  ← AuthService + AuthServiceImplement
-│   │   └── user/                         ← User management
-│   │       ├── entity/User.java, Role.java
-│   │       ├── repository/UserRepository, RoleRepository
-│   │       └── service/UserService.java
+│   │   ├── auth/                         ← Authentication (register, login, OTP, refresh, logout, change-password, exchange-ticket)
+│   │   ├── user/                         ← User management
+│   │   ├── job/                          ← Jobs + Categories (controller/service/repository/querydsl)
+│   │   ├── company/                      ← Companies + Reviews
+│   │   ├── employee/                     ← Employee profiles, Saved Jobs, Follows, Certificates
+│   │   ├── application/                  ← Applications (apply/cancel/status)
+│   │   ├── ats/                          ← AI CV scoring (config/controller/dto/service)
+│   │   └── notification/                 ← Notification entity + repository
 │   │
 │   └── infrastructure/                   ← Technical infrastructure
-│       ├── mail/EmailService.java        ← Async email via SMTP
-│       ├── redis/RedisService.java       ← Session & cache management
+│       ├── mail/EmailService.java        ← Async email via SMTP (virtual thread pool)
+│       ├── redis/RedisService.java       ← Generic Redis util (SET/GET/DELETE/GETDEL)
+│       ├── cloudinary/CloudinaryService.java ← Upload/delete file lên Cloudinary
+│       ├── scheduler/JobExpiryScheduler.java ← Auto-expire job hết hạn (cron daily 00:00)
 │       └── security/                     ← Security layer
 │           ├── jwt/                      ← JWT filter, util, handlers
 │           ├── oauth2/                   ← OIDC user service, handlers
@@ -703,10 +790,10 @@ OTP sends are rate-limited with:
 ### How does refresh token rotation work?
 
 Each time you call `/refresh-token`:
-1. The old refresh token is validated and blacklisted
-2. A new refresh token (new jti) is generated
-3. The session in Redis is updated with the new jti
-4. If a used token is presented again → reuse detection kicks in, invalidating all tokens for that device family
+1. The old refresh token is validated (chữ ký, hết hạn, blacklist, jti khớp session)
+2. A new refresh token (new jti) is generated and stored in the Redis session (`currentRefreshJti` = jti mới)
+3. The old refresh token is **NOT blacklisted** — it simply no longer matches the session's `currentRefreshJti`, so it becomes unusable
+4. If the old (already-used) token is presented again → jti mismatch triggers reuse detection (code `3013`), revoking the whole session family
 
 ---
 

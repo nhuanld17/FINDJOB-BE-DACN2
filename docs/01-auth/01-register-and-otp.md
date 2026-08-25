@@ -40,9 +40,9 @@
 
 | Endpoint | Việc | Đầu vào |
 |---|---|---|
-| `/api/v1/auth/register` | tạo/cập nhật tài khoản chưa kích hoạt + quyết định có phát OTP mới không | body `RegisterRequest` + cookie `pendingToken` (tùy chọn) |
-| `/api/v1/auth/verify-otp` | nhập OTP để kích hoạt | body `otp` + cookie `pendingToken` (bắt buộc) |
-| `/api/v1/auth/resend-otp` | phát lại OTP mới | cookie `pendingToken` (bắt buộc) |
+| `/api/v1/auth/register` | tạo/cập nhật tài khoản chưa kích hoạt + quyết định có phát OTP mới không | body `RegisterRequest` + `pendingToken` (cookie web / header `X-Pending-Token` mobile) |
+| `/api/v1/auth/verify-otp` | nhập OTP để kích hoạt | body `otp` + `pendingToken` (bắt buộc — cookie / header) |
+| `/api/v1/auth/resend-otp` | phát lại OTP mới | `pendingToken` (bắt buộc — cookie / header) |
 
 ### Nhớ kỹ: "2 tầng code" trong response
 
@@ -81,6 +81,8 @@ là hiểu toàn bộ luồng.
 | **cooldown** | `otp:cooldown:{userId}` | 60s | cờ chặn resend trong 60s sau mỗi lần phát. |
 | **pending token** | `pending:{token}` ↔ `pending:user:{userId}` | 10 phút | map 2 chiều token(cookie) ↔ userId, để server biết "OTP này của ai". |
 
+> **Nguồn gốc prefix trong code:** `otp:*` → `OtpConstant` (PREFIX/COOLDOWN_PREFIX/ATTEMPTS_PREFIX/WRONG_PREFIX); `pending:*` → `PendingTokenConstant` (PREFIX/USER_PREFIX) — đều ở `common/constant/`. Đây là literal thật trong Redis — không đổi khi đổi tên constant.
+
 Ngưỡng (hằng số trong `OtpServiceImpl`): `MAX_ATTEMPTS = 5`, `MAX_WRONG = 5`.
 
 ### Cách các bộ đếm hành xử (dễ nhầm)
@@ -101,8 +103,9 @@ Ngưỡng (hằng số trong `OtpServiceImpl`): `MAX_ATTEMPTS = 5`, `MAX_WRONG =
   theo user (gia hạn TTL); nếu không có thì chỉ chấp nhận token trong cookie **khi nó đúng là của
   user này**; cuối cùng mới tạo mới. Dùng ở các nhánh "tái dùng OTP cũ" để giữ nguyên phiên.
 
-Cookie `pendingToken`: `HttpOnly`, `path=/`, `maxAge=600s` (10 phút), `secure=false` (môi trường
-dev — production nên bật).
+Cookie `pendingToken` (web): `HttpOnly`, `path=/`, `maxAge=600s` (10 phút), `secure=false` (môi
+trường dev — production nên bật). **Mobile không dùng cookie** — nhận `data.pendingToken` trong
+body và gửi lại qua header `X-Pending-Token` cho các request OTP tiếp theo.
 
 ---
 
@@ -110,8 +113,14 @@ dev — production nên bật).
 
 `POST /api/v1/auth/register`
 
-**Request** (`RegisterRequest`): `username`, `email`, `password`, `confirmPassword`, `fullName`.
-Cookie `pendingToken` (tùy chọn). Hàm `register()` có `@Transactional`, trả `RegisterResponse`.
+**Request** (`RegisterRequest`): `username`, `email`, `password`, `confirmPassword`, `fullName`,
+`accountType` (enum `USER`/`EMPLOYER`, null → USER), `companyName` (**bắt buộc khi
+`accountType = EMPLOYER`** — thiếu → `2013 COMPANY_NAME_REQUIRED`; sau verify OTP thành công
+backend **tự tạo** Employee hoặc Company).
+
+**Dual-mode pendingToken** (`AuthController`): web gửi cookie `pendingToken` (tùy chọn), **mobile
+gửi header `X-Pending-Token`** — server ưu tiên header, fallback cookie. Hàm `register()` có
+`@Transactional`, trả `RegisterResponse`.
 
 ### Bước 1 — kiểm tra đầu vào & tính duy nhất (ném lỗi ngay)
 
@@ -171,8 +180,8 @@ register(body, pendingToken?)
 
 `POST /api/v1/auth/verify-otp`
 
-**Request**: body `otp` (6 số) + cookie `pendingToken` (bắt buộc). `@Transactional`, trả
-`VerifyOtpResponse`.
+**Request**: body `otp` (6 số) + `pendingToken` (bắt buộc — cookie web hoặc header
+`X-Pending-Token` mobile). `@Transactional`, trả `VerifyOtpResponse`.
 
 ### Bước 1 — xác định phiên
 - `pendingToken` trống → `3003 OTP_VERIFICATION_SESSION_EXPIRED`.
@@ -212,8 +221,9 @@ register(body, pendingToken?)
 
 `POST /api/v1/auth/resend-otp`
 
-**Request**: cookie `pendingToken` (bắt buộc). `@Transactional(readOnly=true)` (chỉ đọc DB;
-ghi Redis + gửi mail nằm ngoài phạm vi transaction). Trả `ResendOtpResponse`.
+**Request**: `pendingToken` (bắt buộc — cookie web hoặc header `X-Pending-Token` mobile).
+`@Transactional(readOnly=true)` (chỉ đọc DB; nghi Redis + gửi mail nằm ngoài phạm vi transaction).
+Trả `ResendOtpResponse`.
 
 ### Bước 1 — xác định phiên (giống verify)
 `pendingToken` trống / không tra được → `3003` (+ xóa cookie nếu tra Redis không ra).

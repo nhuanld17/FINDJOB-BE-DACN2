@@ -17,6 +17,7 @@ import com.example.boilerplate.features.employee.entity.Employee;
 import com.example.boilerplate.features.employee.repository.EmployeeRepository;
 import com.example.boilerplate.features.job.entity.Job;
 import com.example.boilerplate.features.job.repository.JobRepository;
+import com.example.boilerplate.features.notification.service.NotificationService;
 import com.example.boilerplate.infrastructure.cloudinary.CloudinaryService;
 import com.example.boilerplate.infrastructure.mail.EmailService;
 import lombok.RequiredArgsConstructor;
@@ -42,10 +43,11 @@ public class ApplicationService {
     private final CloudinaryService cloudinaryService;
     private final ApplicationQueryDSL applicationQueryDSL;
     private final EmailService emailService;
+    private final NotificationService notificationService;
 
     /**
      * Ứng tuyển / cập nhật CV cho một job.
-     * <p>
+     * 
      * - Chưa từng apply → tạo mới, upload CV lên Cloudinary, tăng apply_count
      * - Đã apply rồi → upload CV mới lên Cloudinary, xoá CV cũ, cập nhật thông tin
      * (apply_count không tăng vì chỉ thay CV, không phải người mới)
@@ -69,6 +71,7 @@ public class ApplicationService {
         Application application;
         String oldCvUrl = null;  // Lưu CV cũ để xoá SAU khi save DB thành công
         String uploadedUrl = null; // Track CV mới để cleanup nếu DB fail
+        boolean isNewApplication = false; // Đơn mới tạo -> cần gửi thông báo cho công ty
 
         if (existingOpt.isPresent()) {
             // Đã apply rồi → cập nhật
@@ -96,6 +99,7 @@ public class ApplicationService {
                     employee.getId(), jobId);
         } else {
             // Chưa apply → tạo mới
+            isNewApplication = true;
             application = new Application();
             application.setJob(job);
             application.setEmployee(employee);
@@ -135,12 +139,31 @@ public class ApplicationService {
             deleteCvFromCloudinary(oldCvUrl);
         }
 
+        // Chỉ gửi khi TẠO MỚI đơn - user apply lại (đổi CV) không gửi lại,
+        // tránh spam thông báo cho công ty.
+        // link = jobId (String) — app COMPANY mở màn danh sách ứng viên của job.
+        if (isNewApplication) {
+            // fullName có thể null (user đăng ký không nhập tên) → fallback an toàn
+            String applicantName = employee.getUser().getFullName();
+            if (applicantName == null || applicantName.isBlank()) {
+                applicantName = "Ứng viên mới";
+            }
+            notificationService.notifyUser(
+                    job.getCompany().getOwner().getId(),
+                    "APPLICATION_NEW",
+                    "Có ứng viên mới ứng tuyển",
+                    String.format("%s vừa ứng tuyển vị trí \"%s\" tại %s.",
+                            applicantName, job.getTitle(), job.getCompany().getName()),
+                    String.valueOf(jobId)
+            );
+        }
+
         return toResponse(application);
     }
 
     /**
      * Huỷ ứng tuyển — xoá hẳn application khỏi DB + xoá CV trên Cloudinary.
-     * <p>
+     * 
      * Chỉ chủ sở hữu mới được huỷ.
      * Chỉ được huỷ khi đơn còn PENDING — đơn đã được công ty xử lý
      * (REVIEWING/SHORTLISTED/ACCEPTED/REJECTED) thì không cho huỷ nữa.
@@ -181,7 +204,7 @@ public class ApplicationService {
 
     /**
      * Kiểm tra user hiện tại đã ứng tuyển job này chưa.
-     * <p>
+     * 
      * Dùng để hiển thị trạng thái nút "Ứng tuyển" trên màn chi tiết job
      * (pattern giống SavedJobService.isSaved):
      * - Chưa apply → { isApplied: false, applicationId: null, status: null, cvUrl: null }
@@ -238,7 +261,7 @@ public class ApplicationService {
 
     /**
      * Lấy danh sách ứng viên đã apply vào 1 job (dành cho COMPANY).
-     * <p>
+     * 
      * - Kiểm tra quyền sở hữu: chỉ chủ job mới được xem
      * - Tôn trọng quyền riêng tư: nếu employee có isPublic = false, ẩn thông tin cá nhân
      * - Có filter theo trạng thái (PENDING, REVIEWING, ...) và phân trang
@@ -275,7 +298,7 @@ public class ApplicationService {
 
     /**
      * Xem chi tiết 1 application (dành cho COMPANY).
-     * <p>
+     * 
      * Chỉ chủ sở hữu job mới được xem chi tiết application của job đó.
      * Trả về thông tin đầy đủ của ứng viên + application + job context.
      *
@@ -300,7 +323,7 @@ public class ApplicationService {
 
     /**
      * Cập nhật trạng thái application (dành cho COMPANY).
-     * <p>
+     * 
      * - Chỉ chủ sở hữu job mới được cập nhật
      * - Đã ACCEPTED → không được đổi status khác (quyết định cuối)
      * - Đã REJECTED → có thể revert lại để xem xét
@@ -390,17 +413,17 @@ public class ApplicationService {
         applicationRepository.save(application);
 
         // === 6. Gửi email thông báo cho ứng viên (async, không chặn API) ===
-        // ACCEPTED / REJECTED là quyết định cuối → thông báo qua mail.
+        // ACCEPTED / REJECTED là quyết định cuối -> thông báo qua mail.
         // - Email của ứng viên luôn có (NOT NULL) — KHÔNG phụ thuộc isPublic
         // - Phải đọc giá trị TRƯỚC khi gọi (thread async có thể chạy sau khi
         //   transaction commit — tránh lazy loading ở thread khác)
         // - @Async chạy thread riêng → email fail không rollback việc đổi status
+        var applicant = application.getEmployee().getUser();
+        String jobTitle = application.getJob().getTitle();
+        String companyName = application.getJob().getCompany().getName();
+
         if (newStatus == ApplicationStatus.ACCEPTED
                 || newStatus == ApplicationStatus.REJECTED) {
-            var applicant = application.getEmployee().getUser();
-            String jobTitle = application.getJob().getTitle();
-            String companyName = application.getJob().getCompany().getName();
-
             if (newStatus == ApplicationStatus.ACCEPTED) {
                 emailService.sendApplicationAcceptedEmail(
                         applicant.getEmail(), applicant.getFullName(),
@@ -410,6 +433,54 @@ public class ApplicationService {
                         applicant.getEmail(), applicant.getFullName(),
                         jobTitle, companyName, application.getRejectedReason());
             }
+        }
+
+        // === 7. Thông báo IN-APP cho ứng viên (mọi lần đổi status) ===
+        // Khác email (chỉ gửi cho quyết định cuối ACCEPTED/REJECTED), thông
+        // báo in-app gửi cho MỌI lần đổi status (REVIEWING, SHORTLISTED, ...)
+        // để ứng viên thấy ngay trong app — không phải chờ mở email.
+        // Ghi cùng transaction → DB fail thì rollback luôn, không có notif "ảo".
+        // link = jobId (String) — app USER mở JobDetailUser tương ứng.
+        String notifTitle = null;
+        String notifContent = null;
+        switch (newStatus) {
+            case REVIEWING -> {
+                notifTitle = "Hồ sơ đang được xem xét";
+                notifContent = String.format(
+                        "Nhà tuyển dụng %s đang xem xét hồ sơ ứng tuyển \"%s\" của bạn.",
+                        companyName, jobTitle);
+            }
+            case SHORTLISTED -> {
+                notifTitle = "Chúc mừng! Bạn đã lọt vào danh sách tiềm năng";
+                notifContent = String.format(
+                        "Đơn ứng tuyển \"%s\" tại %s đã được đưa vào danh sách ứng viên tiềm năng.",
+                        jobTitle, companyName);
+            }
+            case ACCEPTED -> {
+                notifTitle = "Chúc mừng! Bạn đã được nhận";
+                notifContent = String.format(
+                        "Đơn ứng tuyển \"%s\" tại %s đã được chấp nhận. Công ty sẽ liên hệ với bạn trong thời gian tới.",
+                        jobTitle, companyName);
+            }
+            case REJECTED -> {
+                notifTitle = "Rất tiếc, đơn ứng tuyển bị từ chối";
+                notifContent = String.format(
+                        "Đơn ứng tuyển \"%s\" tại %s chưa phù hợp với yêu cầu hiện tại. Cố gắng ở những cơ hội khác bạn nhé!",
+                        jobTitle, companyName);
+            }
+            default -> {
+                // PENDING / CANCELLED — không gửi thông báo in-app
+            }
+        }
+
+        if (notifTitle != null) {
+            notificationService.notifyUser(
+                    applicant.getId(),
+                    "APPLICATION_STATUS",
+                    notifTitle,
+                    notifContent,
+                    String.valueOf(application.getJob().getId())
+            );
         }
 
         log.info("Application {} status updated: {} → {} by user {}",

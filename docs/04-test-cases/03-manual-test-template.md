@@ -1,5 +1,16 @@
 # TEST
 
+> ⚠️ **CẢNH BÁO (2026-08-06):** File này là **template cũ** kế thừa từ một project khác (còn tham chiếu `/ShopHub/`, redirect server-side sang `/verify-otp`, cookie `PENDING_TOKEN` uppercase, "success overlay") — **KHÔNG khớp với FINDJOB-BE hiện tại**.
+>
+> FINDJOB hiện tại hoạt động theo **API JSON thuần**:
+> - Cookie OTP tên `pendingToken` (lowercase) + header `X-Pending-Token` (mobile dual-mode)
+> - `POST /verify-otp` trả JSON (không redirect) — FE tự điều hướng sau khi nhận `code = 3001`
+> - Không có trang "success overlay" — xác nhận thành công do FE render
+>
+> 📌 Bộ test tay **chính thức** của project: `01-authentication.md` (OTP/login) + `02-access-refresh-token.md` (AT/RT) + `04-business-apis.md` (business).
+
+---
+
 ## Kịch bản kết hợp — Flow A → B → C
 
 

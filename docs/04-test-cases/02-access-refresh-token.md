@@ -4,7 +4,7 @@ Bộ test tay (Postman / curl) cho toàn bộ vòng đời **Access Token (AT)**
 cấp token (**login**) · gác cổng AT (**JwtAuthFilter**) · xoay & chống replay RT (**/refresh-token**) · thu hồi (**/logout**).
 
 Code trả về theo 2 khuôn:
-- **Thành công** (login/refresh): HTTP 200, bọc trong `APIResponse` → `data` chứa `AuthResponse` (`code`, `id`, `username`, `roles`, `accessToken`). **RT nằm ở cookie `Set-Cookie`, không có trong body.**
+- **Thành công** (login/refresh): HTTP 200, bọc trong `APIResponse` → `data` chứa `AuthResponse` (`code`, `id`, `username`, `roles`, `accessToken`, `refreshToken`, `hasPassword`). **Dual-mode RT**: web nhận RT qua cookie `Set-Cookie` (`data.refreshToken = null`); **mobile nhận `data.refreshToken` trong body** và gửi lại RT qua body `{ "refreshToken": "..." }` khi refresh/logout.
 - **Lỗi**: `GlobalExceptionHandler` (cho `/refresh-token`, `/logout`) và `JwtAuthEntryPoint` (cho AT trong filter) đều trả cùng format `ErrorResponse.of(status, code, message)`.
 
 ## Mục lục
@@ -25,8 +25,8 @@ Code trả về theo 2 khuôn:
 | Hàm | Method | URL | Auth |
 |---|---|---|---|
 | login | POST | `http://localhost:8080/api/v1/auth/login` | public |
-| refresh-token | POST | `http://localhost:8080/api/v1/auth/refresh-token` | public (đọc cookie `refreshToken`) |
-| logout | POST | `http://localhost:8080/api/v1/auth/logout` | public (đọc cookie `refreshToken` + header `Authorization`) |
+| refresh-token | POST | `http://localhost:8080/api/v1/auth/refresh-token` | public — **dual-mode**: cookie `refreshToken` (web) **hoặc** body `{ "refreshToken": "..." }` (mobile) |
+| logout | POST | `http://localhost:8080/api/v1/auth/logout` | public — cookie `refreshToken` + body (dual-mode) + header `Authorization` |
 | **endpoint protected** | GET | `http://localhost:8080/api/v1/test/ping` | **cần AT** (xem 0.5) |
 
 > **Lưu ý quan trọng:** `SecurityConfig.PUBLIC_PATTERNS` để `/api/v1/auth/**` là public → **`JwtAuthFilter` KHÔNG chạy** trên login/refresh/logout. Vì vậy muốn test Access Token phải bắn vào **một path protected** (bất kỳ path nào KHÔNG nằm trong `PUBLIC_PATTERNS`).
@@ -39,15 +39,15 @@ Code trả về theo 2 khuôn:
 `buildToken()` nhét: `sub` = username · `jti` (UUID) · `sessionId` (UUID) · `deviceId` (UUID) · `roles` · `iat` · `exp`.
 AT và RT **giống hệt claim**, chỉ khác `exp` (AT ngắn, RT dài) và `jti` (khác nhau).
 
-### 0.4 Cấu trúc session trong Redis (`RedisService.createSession`)
+### 0.4 Cấu trúc session trong Redis (`SessionService.createSession`)
 Hash `session:{sessionId}` gồm các field:
-`username` · `deviceId` · `refreshJtiCurrent` · `status` (`ACTIVE`/`REVOKED`) · `createdAt` · `lastSeen` · `deviceName` · `ip` · `userAgent`. TTL cố định **7 ngày** (không gia hạn khi refresh — fixed window).
+`username` · `deviceId` · `currentRefreshJti` · `status` (`ACTIVE`/`REVOKED`) · `createdAt` · `lastSeen` · `deviceName` · `ip` · `userAgent`. TTL cố định **7 ngày** (không gia hạn khi refresh — fixed window).
 
 **Lệnh redis-cli hay dùng:**
 ```bash
 redis-cli KEYS "session:*"                 # tìm sessionId đang sống
 redis-cli HGETALL session:<sid>            # xem toàn bộ field session
-redis-cli HGET  session:<sid> refreshJtiCurrent   # jti RT hiện hành
+redis-cli HGET  session:<sid> currentRefreshJti   # jti RT hiện hành
 redis-cli KEYS "blacklist:*"               # blacklist:access:<jti> / blacklist:refresh:<jti>
 redis-cli SMEMBERS user:sessions:<userId>  # danh sách session của user
 redis-cli TTL session:<sid>                # còn ~604800s = 7 ngày
@@ -55,7 +55,7 @@ redis-cli TTL session:<sid>                # còn ~604800s = 7 ngày
 # Ép state để chạm nhánh khó:
 redis-cli DEL  session:<sid>                       # session biến mất
 redis-cli HSET session:<sid> status REVOKED        # session không active
-redis-cli HDEL session:<sid> refreshJtiCurrent     # mất jti hiện hành
+redis-cli HDEL session:<sid> currentRefreshJti     # mất jti hiện hành
 redis-cli HSET session:<sid> username hacker       # username lệch token
 redis-cli HSET session:<sid> deviceId 99999999-9999-9999-9999-999999999999  # device lệch
 ```
@@ -146,10 +146,10 @@ Login → chờ >3s → bắn AT vào endpoint protected. Nhớ **trả lại gi
 - HTTP 200, `data.code = 4001`, có `accessToken`, `id`, `username`, `roles`.
 - Header `Set-Cookie: refreshToken=...` (HttpOnly, Secure, SameSite=Strict, Max-Age=604800).
 - AT claim có đủ `sub`, `jti`, `sessionId`, `deviceId = 11111111-...`, `roles`, `exp`.
-- Redis: `session:{sid}` tồn tại, `status=ACTIVE`, `deviceId` = deviceId trong request, `refreshJtiCurrent` = **jti của RT** (không phải AT). `user:sessions:{userId}` chứa `{sid}`.
+- Redis: `session:{sid}` tồn tại, `status=ACTIVE`, `deviceId` = deviceId trong request, `currentRefreshJti` = **jti của RT** (không phải AT). `user:sessions:{userId}` chứa `{sid}`.
 - **Không** đụng bất kỳ key OTP nào.
 
-**Điểm verify đặc biệt:** `HGET session:{sid} refreshJtiCurrent` phải bằng `jti` của **refresh token** (decode RT từ cookie), KHÁC với `jti` của access token.
+**Điểm verify đặc biệt:** `HGET session:{sid} currentRefreshJti` phải bằng `jti` của **refresh token** (decode RT từ cookie), KHÁC với `jti` của access token.
 
 ---
 
@@ -216,7 +216,7 @@ Thứ tự guard trong `doFilterInternal`: **parse claim → blacklist AT → se
 
 **Kỳ vọng:** HTTP 401, `code = 2010` (Token has been revoked) — nhánh `isAccessTokenRevoked`. Kiểm tra `redis-cli KEYS "blacklist:access:*"` có key.
 
-> **Ghi chú thiết kế:** `/refresh-token` **không** blacklist AT cũ **lẫn RT cũ** — rotation dựa trên `refreshJtiCurrent`, không phải blacklist. Nên sau khi refresh, AT cũ vẫn dùng được đến khi hết hạn tự nhiên; RT cũ thì hết hiệu lực vì `jti` không còn khớp `refreshJtiCurrent` (bị bắt ở nhánh reuse, không phải blacklist). Chỉ **logout** mới đưa AT/RT vào blacklist.
+> **Ghi chú thiết kế:** `/refresh-token` **không** blacklist AT cũ **lẫn RT cũ** — rotation dựa trên `currentRefreshJti`, không phải blacklist. Nên sau khi refresh, AT cũ vẫn dùng được đến khi hết hạn tự nhiên; RT cũ thì hết hiệu lực vì `jti` không còn khớp `currentRefreshJti` (bị bắt ở nhánh reuse, không phải blacklist). Chỉ **logout** mới đưa AT/RT vào blacklist.
 
 ---
 
@@ -290,8 +290,12 @@ Thứ tự guard trong `doFilterInternal`: **parse claim → blacklist AT → se
 
 ## Nhóm 3: REFRESH TOKEN — /refresh-token
 
-RT nằm ở **cookie `refreshToken`**. Postman tự lưu cookie sau login. Để test các nhánh cần RT cụ thể (reuse), phải **copy giá trị cookie thủ công** trước khi nó bị xoay.
-Thứ tự guard trong `refreshToken()`: **cookie tồn tại → parse claim → blacklist RT → session tồn tại → status ACTIVE → refreshJtiCurrent tồn tại → jti khớp (chống reuse) → user (deleted/inactive) → isTokenValid → cấp mới + rotate**.
+**Dual-mode gửi RT:**
+- **Web:** RT nằm ở cookie `refreshToken` — Postman tự lưu cookie sau login và tự gửi khi refresh.
+- **Mobile:** gửi body `{ "refreshToken": "<RT>" }` (server ưu tiên body, không có body mới fallback cookie). Các TC dưới mô tả theo kiểu web (cookie); muốn test kiểu mobile thì đổi sang body tương ứng.
+
+Để test các nhánh cần RT cụ thể (reuse), phải **copy giá trị RT (cookie hoặc `data.refreshToken`) thủ công** trước khi nó bị xoay.
+Thứ tự guard trong `refreshToken()`: **cookie tồn tại → parse claim → blacklist RT → session tồn tại → status ACTIVE → currentRefreshJti tồn tại → jti khớp (chống reuse) → user (deleted/inactive) → isTokenValid → cấp mới + rotate**.
 
 ### TC-RT-01: Refresh hợp lệ → 4001, xoay RT + cấp AT mới
 
@@ -303,10 +307,10 @@ Thứ tự guard trong `refreshToken()`: **cookie tồn tại → parse claim �
 **Kỳ vọng:**
 - HTTP 200, `data.code = 4001`, có `accessToken` **mới**.
 - Header `Set-Cookie: refreshToken=RT_2` (khác `RT_1`) — token rotation.
-- Redis: `session:{sid}.refreshJtiCurrent` = `jti_2` (jti của RT_2, khác `jti_1`); `lastSeen` cập nhật.
-- **KHÔNG** tạo `blacklist:refresh:{jti_1}`. Refresh cố ý không blacklist RT cũ — RT_1 hết hiệu lực chỉ vì `refreshJtiCurrent` đã đổi sang `jti_2`, nên nếu bị replay sẽ dính reuse-detection (xem TC-RT-08) chứ không phải guard blacklist.
+- Redis: `session:{sid}.currentRefreshJti` = `jti_2` (jti của RT_2, khác `jti_1`); `lastSeen` cập nhật.
+- **KHÔNG** tạo `blacklist:refresh:{jti_1}`. Refresh cố ý không blacklist RT cũ — RT_1 hết hiệu lực chỉ vì `currentRefreshJti` đã đổi sang `jti_2`, nên nếu bị replay sẽ dính reuse-detection (xem TC-RT-08) chứ không phải guard blacklist.
 
-**Điểm verify đặc biệt:** so `refreshJtiCurrent` trước/sau — phải đổi từ `jti_1` sang `jti_2`. Đồng thời `redis-cli EXISTS blacklist:refresh:<jti_1>` = `0` (refresh KHÔNG blacklist RT cũ).
+**Điểm verify đặc biệt:** so `currentRefreshJti` trước/sau — phải đổi từ `jti_1` sang `jti_2`. Đồng thời `redis-cli EXISTS blacklist:refresh:<jti_1>` = `0` (refresh KHÔNG blacklist RT cũ).
 
 ---
 
@@ -331,10 +335,10 @@ Thứ tự guard trong `refreshToken()`: **cookie tồn tại → parse claim �
 **Mục tiêu:** Xác nhận guard `isRefreshTokenRevoked(jti)` chặn mọi RT có `jti` nằm trong `blacklist:refresh:{jti}`, và guard này chạy **trước** guard session — bất kể session còn hay mất.
 
 **Bối cảnh RT bị blacklist (2 nguồn — code):** một `jti` RT bị đưa vào `blacklist:refresh` khi:
-1. **Logout** (`logout()`): blacklist `refreshJtiCurrent` của session (TC-LO-01).
+1. **Logout** (`logout()`): blacklist `currentRefreshJti` của session (TC-LO-01).
 2. **Phát hiện reuse** (`refreshToken()`): blacklist `jti` của RT bị replay (TC-RT-08).
 
-> Lưu ý: refresh thành công **KHÔNG** blacklist RT cũ (cố ý — xem TC-RT-01). RT cũ chết nhờ `refreshJtiCurrent` đã đổi, không phải nhờ blacklist. Đây là điểm mấu chốt để reuse-detection (3013) không bị guard blacklist (2010) che mất.
+> Lưu ý: refresh thành công **KHÔNG** blacklist RT cũ (cố ý — xem TC-RT-01). RT cũ chết nhờ `currentRefreshJti` đã đổi, không phải nhờ blacklist. Đây là điểm mấu chốt để reuse-detection (3013) không bị guard blacklist (2010) che mất.
 
 TTL của key blacklist = `remainingTimeOf(RT)` (thời gian sống còn lại của chính RT đó).
 
@@ -344,7 +348,7 @@ TTL của key blacklist = `remainingTimeOf(RT)` (thời gian sống còn lại c
 
 **Điều kiện tiên quyết:**
 1. POST `/login` → nhận `RT_1` (copy giá trị cookie ngay), `sid`, `AT_1`.
-2. **Chưa** refresh lần nào (để `jti_1 == refreshJtiCurrent`). Kiểm tra: `redis-cli HGET session:<sid> refreshJtiCurrent` = `jti_1` (decode `RT_1` trên jwt.io để lấy `jti`).
+2. **Chưa** refresh lần nào (để `jti_1 == currentRefreshJti`). Kiểm tra: `redis-cli HGET session:<sid> currentRefreshJti` = `jti_1` (decode `RT_1` trên jwt.io để lấy `jti`).
 3. POST `/logout` với `Authorization: Bearer <AT_1>` + cookie `refreshToken=<RT_1>` (TC-LO-01).
 4. Xác nhận đã blacklist: `redis-cli KEYS "blacklist:refresh:*"` có key `blacklist:refresh:<jti_1>`; đồng thời `redis-cli EXISTS session:<sid>` = `0` (logout đã xóa session).
 
@@ -373,7 +377,7 @@ Nói cách khác: 2010 tại `/refresh-token` giờ **chỉ** đến từ 2 đư
 
 **Điều kiện tiên quyết:**
 1. POST `/login` → copy `RT_1`, lấy `jti_1` (decode) và `sid`.
-2. Xác nhận nền sạch: `redis-cli HGET session:<sid> status` = `ACTIVE`, `redis-cli HGET session:<sid> refreshJtiCurrent` = `jti_1`.
+2. Xác nhận nền sạch: `redis-cli HGET session:<sid> status` = `ACTIVE`, `redis-cli HGET session:<sid> currentRefreshJti` = `jti_1`.
 3. Ép blacklist thủ công:
    ```bash
    redis-cli SET blacklist:refresh:<jti_1> revoked EX 600
@@ -415,10 +419,10 @@ Nói cách khác: 2010 tại `/refresh-token` giờ **chỉ** đến từ 2 đư
 
 ---
 
-### TC-RT-07: Mất field refreshJtiCurrent → SESSION_INACTIVE 3012
+### TC-RT-07: Mất field currentRefreshJti → SESSION_INACTIVE 3012
 
 **Các bước:**
-1. `redis-cli HDEL session:<sid> refreshJtiCurrent`.
+1. `redis-cli HDEL session:<sid> currentRefreshJti`.
 2. POST `/refresh-token` với `RT_1`.
 
 **Kỳ vọng:** HTTP 401, `code = 3012` — nhánh `currentRefreshJtiObj == null`. Cookie bị xóa.
@@ -432,7 +436,7 @@ Nói cách khác: 2010 tại `/refresh-token` giờ **chỉ** đến từ 2 đư
 **Điều kiện tiên quyết:** Login → **copy `RT_1`** (giá trị cookie ngay sau login).
 
 **Các bước:**
-1. POST `/refresh-token` lần 1 (dùng `RT_1`) → 200, nhận `RT_2`. Lúc này `session.refreshJtiCurrent = jti_2`.
+1. POST `/refresh-token` lần 1 (dùng `RT_1`) → 200, nhận `RT_2`. Lúc này `session.currentRefreshJti = jti_2`.
 2. POST `/refresh-token` lần 2 nhưng **cố tình gửi lại `RT_1` cũ**: header `Cookie: refreshToken=<RT_1>`.
 
 **Kỳ vọng:**
@@ -535,12 +539,12 @@ Nói cách khác: 2010 tại `/refresh-token` giờ **chỉ** đến từ 2 đư
 **Các bước:**
 1. POST `/login` → `AT_1`, `RT_1`, `sid`.
 2. GET `/ping` với `AT_1` → 200 (TC-AT-01).
-3. POST `/refresh-token` (RT_1) → `AT_2`, `RT_2`; `RT_1` hết hiệu lực (jti không còn khớp `refreshJtiCurrent`), **không** bị blacklist.
+3. POST `/refresh-token` (RT_1) → `AT_2`, `RT_2`; `RT_1` hết hiệu lực (jti không còn khớp `currentRefreshJti`), **không** bị blacklist.
 4. GET `/ping` với `AT_2` → 200.
 5. POST `/logout` với `Authorization: Bearer <AT_2>` + cookie `RT_2`.
 6. Kiểm tra:
    - GET `/ping` với `AT_2` → **2010** (revoked — logout blacklist AT_2).
-   - POST `/refresh-token` với `RT_2` → **2010** (revoked — logout blacklist `refreshJtiCurrent` = jti_2).
+   - POST `/refresh-token` với `RT_2` → **2010** (revoked — logout blacklist `currentRefreshJti` = jti_2).
    - POST `/refresh-token` với `RT_1` (cũ) → **3012** (session đã bị xóa khi logout; RT_1 không bị blacklist nên rơi vào guard "session tồn tại").
 
 **Kỳ vọng:** Sau logout, không token nào của phiên còn dùng được. `session:{sid}` bị xóa.
@@ -562,7 +566,7 @@ Nói cách khác: 2010 tại `/refresh-token` giờ **chỉ** đến từ 2 đư
 
 **Điểm verify đặc biệt:** bước 5 chứng minh tính chất bảo mật: reuse-detection không chỉ chặn token cũ mà **vô hiệu hóa toàn bộ session** (buộc đăng nhập lại).
 
-> **Ghi chú (sau fix Hướng B):** ở bước 4, `RT_2` là RT đã bị xoay ở bước 3 nhưng **không** bị blacklist (refresh không blacklist RT cũ nữa), nên đi thẳng vào guard reuse (`jti != refreshJtiCurrent`) → **3013 + REVOKED** đúng như kỳ vọng. Trước fix, `RT_2` bị blacklist ngay khi xoay nên bước 4 chỉ ra 2010 và session vẫn sống — test này khi đó SAI so với code. Giờ đã khớp.
+> **Ghi chú (sau fix Hướng B):** ở bước 4, `RT_2` là RT đã bị xoay ở bước 3 nhưng **không** bị blacklist (refresh không blacklist RT cũ nữa), nên đi thẳng vào guard reuse (`jti != currentRefreshJti`) → **3013 + REVOKED** đúng như kỳ vọng. Trước fix, `RT_2` bị blacklist ngay khi xoay nên bước 4 chỉ ra 2010 và session vẫn sống — test này khi đó SAI so với code. Giờ đã khớp.
 
 ---
 
@@ -634,7 +638,7 @@ Nói cách khác: 2010 tại `/refresh-token` giờ **chỉ** đến từ 2 đư
 - [ ] `code` đúng: thành công đọc `data.code` (4001); lỗi đọc `code` top-level (hoặc vắng `code` ở nhánh fallback).
 - [ ] Cookie `refreshToken`: **set mới** khi login & refresh thành công (rotation); **xóa** (Max-Age=0) khi logout / lỗi refresh; **không đổi** với các lỗi tại filter.
 - [ ] `Set-Cookie` giữ đủ thuộc tính: HttpOnly, Secure, SameSite=Strict.
-- [ ] Redis session: `status` đúng (`ACTIVE`/`REVOKED`); `refreshJtiCurrent` **đổi sau mỗi refresh**; `lastSeen` cập nhật khi qua filter/refresh; session **bị xóa** sau logout.
+- [ ] Redis session: `status` đúng (`ACTIVE`/`REVOKED`); `currentRefreshJti` **đổi sau mỗi refresh**; `lastSeen` cập nhật khi qua filter/refresh; session **bị xóa** sau logout.
 - [ ] Blacklist: `blacklist:refresh:{jti}` tạo ở **reuse-detection** (RT bị replay) & logout — **KHÔNG** tạo ở refresh thành công (RT cũ chết nhờ jti đổi, không phải blacklist); `blacklist:access:{jti}` chỉ tạo ở logout có gửi AT.
 - [ ] `user:sessions:{userId}` phản ánh đúng số phiên còn sống.
 - [ ] Reuse (RT-08/E2E-02): sau khi phát hiện, `session.status = REVOKED` và mọi token của phiên đều chết.

@@ -10,7 +10,7 @@ import java.util.Map;
 /**
  * DTO trả về khi COMPANY xem chi tiết 1 application (detail view).
  * Bao gồm thông tin application + thông tin đầy đủ của ứng viên + job context.
- * <p>
+ * 
  * Nếu employee có isPublic = false, thông tin cá nhân sẽ được ẩn (null).
  */
 @Builder

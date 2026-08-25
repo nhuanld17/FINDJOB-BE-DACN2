@@ -2,6 +2,7 @@ package com.example.boilerplate.features.ats.service;
 
 import com.example.boilerplate.common.constant.ErrorCode;
 import com.example.boilerplate.common.exception.AppException;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.pdfbox.io.MemoryUsageSetting;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
@@ -15,24 +16,25 @@ import java.io.InputStream;
 
 /**
  * Service trích xuất text từ file CV (PDF hoặc DOCX).
- * <p>
+ * 
  * Hỗ trợ:
- * <ul>
- *   <li>PDF (.pdf) — dùng Apache PDFBox 2.0.37</li>
- *   <li>Word (.docx) — dùng Apache POI 5.4.0</li>
- * </ul>
- * <p>
+ * 
+ *   - PDF (.pdf) — dùng Apache PDFBox 2.0.37
+ *   - Word (.docx) — dùng Apache POI 5.4.0
+ * 
+ * 
  * ⚠️ File user upload là INPUT KHÔNG TIN CẬY → có tầng phòng thủ:
- * <ul>
- *   <li>Kích thước: Spring multipart cap 10MB (application.yml)</li>
- *   <li>Số trang PDF: tối đa {@value #MAX_PDF_PAGES} trang (chặn DoS bằng
- *       PDF giả mạo hàng nghìn trang làm treo CPU/RAM)</li>
- *   <li>Bộ nhớ: PDFBox load theo chế độ temp-file (tránh OOM)</li>
- *   <li>Độ dài text: truncate ~12k ký tự (tránh vượt token window của LLM)</li>
- * </ul>
+ * 
+ *   - Kích thước: Spring multipart cap 10MB (application.yml)
+ *   - Số trang PDF: tối đa {@value #MAX_PDF_PAGES} trang (chặn DoS bằng
+ *       PDF giả mạo hàng nghìn trang làm treo CPU/RAM)
+ *   - Bộ nhớ: PDFBox load theo chế độ temp-file (tránh OOM)
+ *   - Độ dài text: truncate ~12k ký tự (tránh vượt token window của LLM)
+ * 
  * Nếu file là ảnh scan (không có text layer) → trả text rỗng → service gọi sẽ
  * throw {@link AppException} với {@link ErrorCode#ATS_CV_EMPTY}.
  */
+@Slf4j
 @Service
 public class FileParserService {
 
@@ -58,14 +60,14 @@ public class FileParserService {
      */
     public String extractText(MultipartFile file) {
         if (file == null || file.isEmpty()) {
-            throw new AppException(ErrorCode.ATS_CV_EMPTY, "CV file is required");
+            throw new AppException(ErrorCode.ATS_CV_REQUIRED);
         }
 
         // Kiểm tra content-type hoặc extension
         String contentType = file.getContentType();
         String originalFilename = file.getOriginalFilename();
         if (originalFilename == null) {
-            throw new AppException(ErrorCode.ATS_CV_EMPTY, "CV file name is invalid");
+            throw new AppException(ErrorCode.ATS_CV_INVALID_NAME);
         }
 
         String text;
@@ -78,18 +80,18 @@ public class FileParserService {
                     || originalFilename.toLowerCase().endsWith(".docx")) {
                 text = extractDocxText(file);
             } else {
-                throw new AppException(ErrorCode.ATS_CV_EMPTY,
-                        "Unsupported file format. Only PDF (.pdf) and Word (.docx) are supported");
+                throw new AppException(ErrorCode.ATS_CV_UNSUPPORTED);
             }
         } catch (IOException e) {
-            throw new AppException(ErrorCode.ATS_CV_EMPTY, "Cannot read CV file: " + e.getMessage());
+            // Chi tiết lỗi thật (đường dẫn file, exception detail) chỉ log server-side,
+            // không đưa vào message trả client (tránh leak thông tin hệ thống).
+            log.warn("Cannot read CV file: {}", e.getMessage());
+            throw new AppException(ErrorCode.ATS_CV_UNREADABLE);
         }
 
-        // Kiểm tra text rỗng (ảnh scan)
+        // Kiểm tra text rỗng (ảnh scan) — message mặc định của ATS_CV_EMPTY đã mô tả đủ
         if (text == null || text.trim().length() < MIN_TEXT_LENGTH) {
-            throw new AppException(ErrorCode.ATS_CV_EMPTY,
-                    "CV is empty or unreadable — only text-based PDF/DOCX files are supported. "
-                            + "Scanned images (photos of documents) are not supported.");
+            throw new AppException(ErrorCode.ATS_CV_EMPTY);
         }
 
         // Truncate nếu quá dài
@@ -100,26 +102,15 @@ public class FileParserService {
         return text.trim();
     }
 
-    /**
-     * Trích xuất text từ file PDF bằng Apache PDFBox.
-     * <p>
-     * Phòng thủ cho input không tin cậy:
-     * <ol>
-     *   <li>{@code MemoryUsageSetting.setupTempFileOnly()} — PDF lớn/giả mạo
-     *       được ghi ra temp file thay vì ngốn hết RAM (tránh OOM)</li>
-     *   <li>{@link #MAX_PDF_PAGES} — chặn PDF quá nhiều trang</li>
-     *   <li>Chỉ trích xuất trong khoảng trang 1..{@link #MAX_PDF_PAGES}
-     *       (defense-in-depth — kể cả PDF lọt qua check cũng chỉ xử lý giới hạn trang)</li>
-     * </ol>
-     */
     private String extractPdfText(MultipartFile file) throws IOException {
         try (InputStream is = file.getInputStream();
              PDDocument document = PDDocument.load(is, MemoryUsageSetting.setupTempFileOnly())) {
 
             // Chặn DoS: PDF vài nghìn trang làm treo CPU/RAM khi stripper duyệt
             if (document.getNumberOfPages() > MAX_PDF_PAGES) {
-                throw new AppException(ErrorCode.ATS_CV_TOO_LARGE,
-                        "CV has too many pages (max " + MAX_PDF_PAGES + ")");
+                // Số trang cụ thể (max 50) chỉ log server-side, client nhận message mặc định
+                log.warn("CV has too many pages: {} (max {})", document.getNumberOfPages(), MAX_PDF_PAGES);
+                throw new AppException(ErrorCode.ATS_CV_TOO_LARGE);
             }
 
             // Defense-in-depth: chỉ trích xuất trong khoảng trang cho phép

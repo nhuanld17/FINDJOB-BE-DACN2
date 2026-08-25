@@ -12,7 +12,7 @@
 |---|---|---|
 | Mở Google login | `window.location.href` — **rời hẳn app** | `WebBrowser.openAuthSessionAsync()` — **mở system browser overlay** |
 | Callback | Browser redirect về `localhost:5173` | System browser redirect về **deep link** `findjob://` |
-| Cookie | Trình duyệt tự động quản lý | React Native **không có Cookie Jar** → không dùng cookie |
+| Cookie | Trình duyệt tự động quản lý (kể cả `oauth2_state` + cookie Google) | App RN **không có Cookie Jar** → app không lưu cookie. ⚠️ NHƯNG **In-App Browser (system browser overlay) CÓ nhận & lưu** cookie `oauth2_state` (chống CSRF) + cookie Google trong lúc chạy flow — xem mục Bảo mật #4 |
 | Nhận ticket | Đọc từ URL trên browser tab | `Linking.parse()` sau khi system browser đóng |
 | Gửi lại ticket | Cookie hoặc fetch | Header `X-Pending-Token` hoặc body |
 
@@ -179,7 +179,7 @@ redirectUrl = "findjob://oauth/callback"
 String returnUrl = request.getParameter("return_url");
 if (returnUrl != null && !returnUrl.isBlank() && isAllowedMobileScheme(returnUrl)) {
     stringRedisTemplate.opsForValue().set(
-            RETURN_KEY_PREFIX + authorizationRequest.getState(),  // "oauth2:return:<state>"
+            Oauth2Constant.RETURN_PREFIX + authorizationRequest.getState(),  // "oauth2:return:<state>" (prefix trong common/constant/Oauth2Constant)
             returnUrl,
             STATE_TTL_SECONDS,     // 120s
             TimeUnit.SECONDS
@@ -210,7 +210,7 @@ String state = request.getParameter("state");
 String returnUrl = null;
 if (state != null) {
     returnUrl = stringRedisTemplate.opsForValue()
-            .getAndDelete("oauth2:return:" + state);  // Atomic GETDEL
+            .getAndDelete(Oauth2Constant.RETURN_PREFIX + state);  // Atomic GETDEL
 }
 
 String target = (returnUrl != null && isAllowedMobileScheme(returnUrl))
@@ -325,7 +325,15 @@ Ticket tự hủy sau 60 giây.
 
 ### 4. State param chống CSRF
 
-OAuth2 `state` param được lưu trong Redis + cookie `oauth2_state` để xác thực callback. Mobile gửi cookie này qua system browser (trình duyệt tự động quản lý).
+OAuth2 `state` param được lưu trong Redis + cookie `oauth2_state` để xác thực callback.
+
+**Cookie `oauth2_state` — In-App Browser chính là người giữ cookie:**
+
+1. App gọi `GET /oauth2/authorization/google?return_url=...` → backend tạo `OAuth2AuthorizationRequest` kèm **`Set-Cookie: oauth2_state=<stateId>`** (TTL 120s, path `/`, SameSite=Lax) → **In-App Browser nhận và lưu cookie này** (xem `RedisOAuth2AuthorizationRequestRepository` — `COOKIE_NAME = "oauth2_state"`)
+2. Google redirect về `/login/oauth2/code/google?...` → **In-App Browser tự động gửi lại cookie** lên → Spring Security đọc cookie, đối chiếu `stateId` với Redis → xác thực callback hợp lệ
+3. Cookie `oauth2_state` **chỉ sống trong system browser** — app RN không đọc, không lưu. Hết TTL 120s hoặc khi flow hoàn tất → cookie hết tác dụng
+
+> ⚠️ **Giải thích chỗ dễ nhầm:** câu "React Native không dùng cookie" trong bảng so sánh nói về **app RN** (JWT lưu SecureStore, refresh token gửi qua body). Còn **In-App Browser thì vẫn nhận & lưu cookie bình thường** — vì nó là một trình duyệt thật (SafariViewController / Chrome Custom Tab), không phải là "không có cookie" cho cả luồng.
 
 ### 5. Lưu token an toàn
 

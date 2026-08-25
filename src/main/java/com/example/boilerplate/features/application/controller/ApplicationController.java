@@ -28,7 +28,7 @@ public class ApplicationController {
 
     /**
      * Ứng tuyển / cập nhật CV cho một job.
-     * <p>
+     * 
      * Nhận multipart form-data gồm file CV (tuỳ chọn) và coverLetter (tuỳ chọn).
      * - Chưa apply → tạo mới, upload CV lên Cloudinary, tăng apply_count
      * - Đã apply → upload CV mới, xoá CV cũ trên Cloudinary, cập nhật thông tin
@@ -81,7 +81,7 @@ public class ApplicationController {
     /**
      * Lấy danh sách job đã apply của user hiện tại.
      * Sắp xếp theo thời gian apply mới nhất trước, có phân trang.
-     * <p>
+     * 
      * Có thể lọc theo trạng thái JOB ({@code jobStatus}) — ACTIVE / EXPIRED / ...
      * Bỏ trống = tất cả. App dùng để hiển thị "Tất cả / Đang tuyển / Hết hạn".
      */
@@ -103,7 +103,7 @@ public class ApplicationController {
      * [Company] Lấy danh sách ứng viên đã apply vào 1 job.
      * Chỉ COMPANY chủ sở hữu job mới xem được.
      * Có filter theo trạng thái, phân trang, sort mới nhất trước.
-     * <p>
+     * 
      * Nếu ứng viên để profile private, thông tin cá nhân sẽ bị ẩn.
      */
     @GetMapping("/jobs/{jobId}")
@@ -139,7 +139,7 @@ public class ApplicationController {
 
     /**
      * [Company] Cập nhật trạng thái application (PENDING → REVIEWING → ACCEPTED/REJECTED).
-     * <p>
+     * 
      * - Khi REJECTED: bắt buộc phải có rejectedReason
      * - recruiterNote: ghi chú nội bộ (optional)
      * - Tự động set reviewedAt / respondedAt

@@ -17,7 +17,7 @@ import org.springframework.web.bind.annotation.*;
 
 /**
  * API cho chức năng đánh giá công ty (Review).
- * <p>
+ * 
  * - USER: tạo/sửa/xoá review của chính mình
  * - Public: xem rating tổng quan + danh sách review
  */

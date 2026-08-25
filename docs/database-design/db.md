@@ -4,6 +4,11 @@
 > Dựa trên schema cũ (PostgreSQL dump) + phân tích từ dự án hiện tại
 > Ngày: 2026-07-18
 
+> 🔄 **Cập nhật 2026-08-06:** Tài liệu này là **bản thiết kế ban đầu**. Schema thực tế đã tiến hoá qua **15 migration Flyway** (`src/main/resources/db/migration/V1..V15`).
+> - **Nguồn sự thật (source of truth) là các file migration** — đọc chúng để biết schema hiện tại 100% chính xác
+> - Các thay đổi lớn sau khi tài liệu này viết: `password` nullable (V15), `company_reviews` (V13), `follower_count`/`average_rating`/`total_reviews` (V12/V13), `pending_account_type`/`pending_company_name` (V7), `years_of_experience` int (V8), `city` enum name (V9), keyset index (V14)
+> - Bảng tổng hợp đầy đủ + đối chiếu từng migration: xem §8 dưới đây
+
 ---
 
 ## 📐 Triết lý thiết kế
@@ -11,38 +16,50 @@
 1. **Kế thừa từ project hiện tại**: Giữ nguyên `users`, `roles`, `user_role` đã có sẵn.
 2. **Phân biệt rõ User vs Company bằng Role**: Khi đăng ký, user chọn 1 trong 2:
    - **🧑‍💻 "Tôi là Ứng viên"** → role `ROLE_USER` → có hồ sơ `employees`
-   - **🏢 "Tôi là Công ty"** → role `ROLE_COMPANY` → có hồ sơ `companies`
+   - **🏢 "Tôi là Công ty"** → role `COMPANY` → có hồ sơ `companies`
 3. **User Company = Đại diện công ty**: 1 user COMPANY sở hữu 1 company, tự đăng job, tự xử lý applications. Không cần bảng `recruiters` riêng.
 4. **Không cần duyệt**: Cả company lẫn job đều được tạo tự do, không qua admin.
 5. **JSONB cho profile dữ liệu biến động**: Skills, experiences, education lưu JSONB — AI-friendly, ít JOIN.
 
 ---
 
-## 🧩 1. Core Auth — Giữ nguyên + thêm ROLE_COMPANY
+## 🧩 1. Core Auth — Giữ nguyên + thêm role COMPANY
 
 ```sql
 -- ============================================
--- KHÔNG THAY ĐỔI — đã có sẵn từ project
+-- USERS — schema THỰC TẾ (tổng hợp V1 + V4 + V5 + V7 + V15)
 -- ============================================
 
 CREATE TABLE users (
     id              BIGSERIAL       PRIMARY KEY,
-    username        VARCHAR(255)    NOT NULL UNIQUE,
+    username        VARCHAR(255)    NOT NULL,
     email           VARCHAR(255)    NOT NULL UNIQUE,
-    password        VARCHAR(255)    NOT NULL,
+    password        VARCHAR(255),                              -- V15: NULL được (Google user)
     full_name       VARCHAR(100),
     is_active       BOOLEAN         NOT NULL DEFAULT false,
     is_deleted      BOOLEAN         NOT NULL DEFAULT false,
-    auth_provider   VARCHAR(20)     NOT NULL DEFAULT 'LOCAL',   -- LOCAL / GOOGLE / GITHUB
-    social_id       VARCHAR(200),
-    avatar_url      VARCHAR(500),
+    auth_provider   VARCHAR(20)     NOT NULL DEFAULT 'LOCAL',  -- V5: LOCAL / GOOGLE
+    social_id       VARCHAR(200),                              -- V5: id từ Google
+    avatar_url      VARCHAR(500),                              -- V5
+    pending_account_type VARCHAR(20),                          -- V7: USER / COMPANY (intent lúc đăng ký)
+    pending_company_name VARCHAR(255),                         -- V7: tên công ty nếu đăng ký COMPANY
     created_at      TIMESTAMPTZ     NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ     NOT NULL DEFAULT now()
 );
 
+-- V4: unique username (đúng nghĩa với check case-sensitive của app)
+ALTER TABLE users ADD CONSTRAINT uk_users_username UNIQUE (username);
+```
+
+> ⚠️ **Thay đổi quan trọng:** `password` **NULL được** từ V15. User đăng ký Google có `auth_provider = 'GOOGLE'` và `password = NULL` (không còn hash UUID giả — anti-pattern đã bỏ). `full_name` hiện lấy từ Google khi OIDC login.
+
+```sql
+-- ROLES — thực tế: giá trị enum KHÔNG có tiền tố ROLE_
+-- V1 seed 'ROLE_USER'/'ROLE_ADMIN' → V2 normalize thành 'USER'/'ADMIN' (khớp RoleEnum Java)
+-- V6 thêm 'COMPANY'
 CREATE TABLE roles (
     id              BIGSERIAL       PRIMARY KEY,
-    name            VARCHAR(50)     NOT NULL UNIQUE
+    name            VARCHAR(50)     NOT NULL UNIQUE    -- 'USER' / 'ADMIN' / 'COMPANY'
 );
 
 CREATE TABLE user_role (
@@ -52,15 +69,7 @@ CREATE TABLE user_role (
 );
 ```
 
-```sql
--- ============================================
--- THÊM — seed roles mới
--- ============================================
-
-INSERT INTO roles (name) VALUES ('ROLE_USER');      -- Ứng viên
-INSERT INTO roles (name) VALUES ('ROLE_COMPANY');   -- Công ty / Nhà tuyển dụng
-INSERT INTO roles (name) VALUES ('ROLE_ADMIN');     -- Admin (nếu cần)
-```
+> V3 seed 3 tài khoản E2E test (`login_active_01@test.com`, `login_inactive_01@test.com`, `login_banned_01@test.com`) — password `12345678` (BCrypt). V11 tự tạo Employee profile cho user có role USER mà chưa có.
 
 ---
 
@@ -82,7 +91,7 @@ CREATE TABLE employees (
     gender          VARCHAR(10),                                 -- MALE / FEMALE / OTHER
 
     -- Địa chỉ
-    city            VARCHAR(100),                                -- "Hồ Chí Minh", "Hà Nội"
+    city            VARCHAR(100),                                -- enum name: "HA_NOI", "HO_CHI_MINH"
     address         VARCHAR(500),
 
     -- CV & Portfolio
@@ -137,7 +146,7 @@ CREATE INDEX idx_certificates_employee ON certificates(employee_id);
 
 ```sql
 -- ============================================
--- COMPANIES — Dành cho user có role ROLE_COMPANY
+-- COMPANIES — Dành cho user có role COMPANY
 -- 1 user COMPANY = 1 company (owner_id UNIQUE)
 -- KHÔNG cần duyệt — tự tạo, tự đăng job
 -- KHÔNG có bảng recruiters riêng
@@ -159,7 +168,7 @@ CREATE TABLE companies (
     industry        VARCHAR(100),                                  -- "IT", "Fintech", "E-commerce"
 
     -- Địa chỉ
-    city            VARCHAR(100)    NOT NULL,
+    city            VARCHAR(100),                                  -- V7: NULL được (auto-create lúc đăng ký)
     address         VARCHAR(500),
 
     -- Liên hệ
@@ -173,6 +182,11 @@ CREATE TABLE companies (
     -- Thông tin người đại diện (lấy user.full_name làm tên)
     contact_position VARCHAR(255),                                 -- "HR Manager", "Tech Lead"
 
+    -- Cache counters (thêm sau)
+    follower_count  INTEGER         NOT NULL DEFAULT 0,            -- V12: đếm cache từ followed_companies
+    average_rating  DOUBLE PRECISION NOT NULL DEFAULT 0.0,         -- V13: điểm TB từ company_reviews
+    total_reviews   INTEGER         NOT NULL DEFAULT 0,            -- V13: tổng lượt đánh giá
+
     created_at      TIMESTAMPTZ     NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ     NOT NULL DEFAULT now(),
     is_deleted      BOOLEAN         NOT NULL DEFAULT false
@@ -184,6 +198,27 @@ CREATE INDEX idx_companies_industry ON companies(industry);
 ```
 
 > **So với schema cũ**: Bỏ hẳn bảng `recruiters`. User COMPANY tự quản lý company, không qua duyệt (bỏ status, approved_by, rejected_reason...).
+
+### 3.1 Company Reviews (V13 — đánh giá công ty)
+
+```sql
+CREATE TABLE company_reviews (
+    id              BIGSERIAL       PRIMARY KEY,
+    company_id      BIGINT          NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+    employee_id     BIGINT          NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+    rating          INTEGER         NOT NULL CHECK (rating >= 1 AND rating <= 5),
+    title           VARCHAR(255),
+    content         TEXT            NOT NULL,
+    pros            TEXT,
+    cons            TEXT,
+    created_at      TIMESTAMPTZ     NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ     NOT NULL DEFAULT now(),
+    UNIQUE (company_id, employee_id)      -- 1 employee chỉ review 1 lần / công ty
+);
+
+CREATE INDEX idx_company_reviews_company ON company_reviews(company_id);
+CREATE INDEX idx_company_reviews_employee ON company_reviews(employee_id);
+```
 
 ---
 
@@ -214,11 +249,11 @@ CREATE TABLE jobs (
     salary_currency  VARCHAR(10)    DEFAULT 'VND',
 
     -- Phân loại
-    years_of_experience VARCHAR(30),                               -- "1-3 years", "3-5 years", "5+ years"
-    seniority       VARCHAR(30)     NOT NULL,                     -- INTERN / FRESHER / JUNIOR / MID / SENIOR / LEAD
-    job_type        VARCHAR(30)     NOT NULL,                     -- FULLTIME / PARTTIME / REMOTE / HYBRID / ONSITE
+    years_of_experience INTEGER,                                   -- V8: đổi từ varchar → integer (số năm, null = không yêu cầu)
+    seniority       VARCHAR(30)     NOT NULL,                     -- INTERN / FRESHER / JUNIOR / MIDDLE / SENIOR / LEAD / MANAGER
+    job_type        VARCHAR(30)     NOT NULL,                     -- FULL_TIME / PART_TIME / CONTRACT / INTERNSHIP / REMOTE / HYBRID
     location        VARCHAR(255),
-    city            VARCHAR(100)    NOT NULL,
+    city            VARCHAR(100)    NOT NULL,                     -- V9: lưu enum name (HA_NOI, HO_CHI_MINH...)
 
     -- Skills yêu cầu
     skills_required JSONB           DEFAULT '[]'::jsonb,          -- ["Java", "Spring Boot", "Docker"]
@@ -247,14 +282,21 @@ CREATE INDEX idx_jobs_company ON jobs(company_id);
 CREATE INDEX idx_jobs_created_by ON jobs(created_by);
 CREATE INDEX idx_jobs_skills ON jobs USING GIN(skills_required);
 
--- Full-text search
+-- Full-text search (dùng 'english' — Postgres không có sẵn Vietnamese FTS config)
 CREATE INDEX idx_jobs_search ON jobs USING GIN(
-    to_tsvector('vietnamese',
+    to_tsvector('english',
         coalesce(title, '') || ' ' ||
         coalesce(description, '') || ' ' ||
         coalesce(requirements, '')
     )
 );
+
+-- Slug duy nhất trong cùng 1 công ty
+CREATE UNIQUE INDEX idx_jobs_company_slug ON jobs(company_id, slug);
+
+-- V14: index composite cho keyset pagination GET /jobs/manage
+CREATE INDEX idx_jobs_company_created_id
+    ON jobs (company_id, created_at DESC, id DESC);
 ```
 
 ### 4.1. Categories — Danh mục nghề nghiệp
@@ -361,20 +403,20 @@ CREATE INDEX idx_notifications_user ON notifications(user_id, is_read, created_a
 ## 🗺️ Sơ đồ quan hệ tổng thể
 
 ```
-users (đã có)
-├── ROLE_USER     ──1:1──► employees (skills JSONB, experiences JSONB, education JSONB)
+users
+├── USER       ──1:1──► employees (skills JSONB, experiences JSONB, education JSONB)
 │                             ├── certificates
 │                             ├── applications ──N:1──► jobs
 │                             ├── saved_jobs ────N:N──► jobs
-│                             └── followed_companies ──N:N──► companies
+│                             ├── followed_companies ──N:N──► companies
+│                             └── company_reviews ──N:1──► companies
 │
-├── ROLE_COMPANY  ──1:1──► companies
+├── COMPANY    ──1:1──► companies
 │                             └── 1:N──► jobs (skills_required JSONB)
 │                                           ├── job_categories ──N:N──► categories
-│                                           ├── applications
-│                                           └── interview_reviews
+│                                           └── applications
 │
-├── ROLE_ADMIN    (không có bảng riêng)
+├── ADMIN      (không có bảng riêng)
 └── roles (qua user_role)
 
 notifications ──N:1──► users
@@ -386,21 +428,42 @@ notifications ──N:1──► users
 
 | # | Bảng | Module | Ghi chú |
 |---|------|--------|---------|
-| 1 | `users` | Auth | ✅ Đã có |
-| 2 | `roles` | Auth | ✅ Đã có (thêm ROLE_COMPANY) |
+| 1 | `users` | Auth | ✅ Đã có (V1) + OIDC fields (V5) + pending fields (V7) + password NULL (V15) |
+| 2 | `roles` | Auth | ✅ Đã có (V1) — enum: USER / ADMIN / COMPANY (V2 normalize, V6 thêm COMPANY) |
 | 3 | `user_role` | Auth | ✅ Đã có |
-| 4 | `employees` | Employee | 🔄 JSONB: skills, experiences, education |
-| 5 | `certificates` | Employee | ✅ Bảng riêng |
-| 6 | `companies` | Company | 🔄 Gộp từ recruiters cũ, bỏ approval flow |
-| 7 | `jobs` | Job | 🔄 JSONB: skills_required, bỏ approval |
-| 8 | `categories` | Job | 🆕 Mới |
-| 9 | `job_categories` | Job | 🆕 Mới |
-| 10 | `applications` | Application | 🔄 Mở rộng từ cũ |
-| 11 | `saved_jobs` | Employee | ✅ Giữ từ cũ |
-| 12 | `followed_companies` | Employee | 🆕 Mới |
-| 13 | `notifications` | Chung | 🔄 Mở rộng từ cũ |
+| 4 | `employees` | Employee | 🔄 JSONB: skills, experiences, education (V6) |
+| 5 | `certificates` | Employee | ✅ Bảng riêng (V6) |
+| 6 | `companies` | Company | 🔄 (V6) + `follower_count` (V12) + rating cache (V13) + city nullable (V7) |
+| 7 | `jobs` | Job | 🔄 (V6) + years int (V8) + city enum (V9) + keyset index (V14) |
+| 8 | `categories` | Job | 🆕 Mới (V6) + seed 30 categories (V10) |
+| 9 | `job_categories` | Job | 🆕 Mới (V6) |
+| 10 | `applications` | Application | 🔄 Mở rộng từ cũ (V6) |
+| 11 | `saved_jobs` | Employee | ✅ Giữ từ cũ (V6) |
+| 12 | `followed_companies` | Employee | 🆕 Mới (V6) |
+| 13 | `company_reviews` | Company | 🆕 Mới (V13) — đánh giá + chấm sao công ty |
+| 14 | `notifications` | Chung | 🔄 Mở rộng từ cũ (V6) |
 
 > **Đã bỏ so với version trước**: `recruiters`, `skills`, `employee_skills`, `experiences`, `education`, `job_skills`
+
+### Đối chiếu migration → thay đổi schema
+
+| Migration | Thay đổi |
+|---|---|
+| V1 | `roles`, `users`, `user_role` + seed USER/ADMIN |
+| V2 | Normalize role: `ROLE_USER`→`USER`, `ROLE_ADMIN`→`ADMIN` |
+| V3 | Seed 3 tài khoản E2E test (BCrypt `12345678`) |
+| V4 | `users.username` UNIQUE |
+| V5 | `users`: `auth_provider`, `social_id`, `avatar_url` |
+| V6 | `companies`, `employees`, `certificates`, `jobs`, `categories`, `job_categories`, `applications`, `saved_jobs`, `followed_companies`, `notifications` + role `COMPANY` |
+| V7 | `companies.city` drop NOT NULL; `users`: `pending_account_type`, `pending_company_name` |
+| V8 | `jobs.years_of_experience` varchar → integer |
+| V9 | `jobs.city` + `companies.city` → enum name (HA_NOI...) |
+| V10 | Seed 30 categories |
+| V11 | Tạo Employee profile cho user USER chưa có |
+| V12 | `companies.follower_count` (cache) |
+| V13 | `company_reviews` + `companies.average_rating`/`total_reviews` |
+| V14 | Index keyset `jobs(company_id, created_at DESC, id DESC)` |
+| V15 | `users.password` NULL allowed + dọn password giả của Google user |
 
 ---
 
@@ -427,32 +490,30 @@ SELECT * FROM employees WHERE skills @> '["Java"]'::jsonb;
 -- Tìm job cần React
 SELECT * FROM jobs WHERE skills_required @> '["React"]'::jsonb;
 
--- Tìm job senior Java ở HCM
+-- Tìm job senior Java ở HCM (city lưu enum name từ V9)
 SELECT * FROM jobs
 WHERE seniority = 'SENIOR'
-  AND city = 'Hồ Chí Minh'
+  AND city = 'HO_CHI_MINH'
   AND skills_required @> '["Java"]'::jsonb
   AND status = 'ACTIVE';
 ```
 
 ---
 
-## 🔜 Kế hoạch implement
+## 🔜 Kế hoạch implement — ✅ ĐÃ HOÀN TẤT (2026-08-06)
+
+> Schema thực tế đã triển khai đủ 15 migration (V1–V15) và chạy trên môi trường dev qua Flyway.
+> Toàn bộ API business đã được xây dựng (Jobs, Companies, Applications, ATS...) — xem contract tại `03-api-contracts/`.
 
 ```mermaid
 gantt
-    title Database Implementation Plan
+    title Database Implementation (đã xong)
     dateFormat  YYYY-MM-DD
-    section Phase 1 — Schema
-    Flyway V6: seed roles + create companies    :2026-07-20, 2d
-    Flyway V7: create employees + certificates  :2026-07-22, 1d
-    Flyway V8: create jobs + categories         :2026-07-23, 2d
-    Flyway V9: create applications + saved_jobs :2026-07-25, 1d
-    section Phase 2 — Backend APIs
-    Company CRUD                                :2026-07-26, 2d
-    Employee CRUD                               :2026-07-28, 2d
-    Job CRUD + search                           :2026-07-30, 3d
-    Application APIs                            :2026-08-02, 2d
+    section Flyway migrations
+    V1-V5 (auth + oidc)                       :2026-07-20, 3d
+    V6 (job platform tables)                  :2026-07-23, 2d
+    V7-V9 (employer reg, years int, city)     :2026-07-26, 2d
+    V10-V15 (seeds, cache, reviews, nullable) :2026-07-29, 5d
 ```
 
 ---

@@ -345,7 +345,7 @@ public AuthResponse createUserSession(
     String refreshToken = jwtUtil.generateRefreshToken(userDetails, sessionId, deviceId);
 
     // 5. Lưu session vào Redis — TRUYỀN ĐÚNG userAgent THẬT
-    redisService.createSession(
+    sessionService.createSession(
         sessionId,
         userDetails.getUsername(),
         deviceId,
@@ -356,7 +356,7 @@ public AuthResponse createUserSession(
     );
 
     // 6. Lưu session index cho user
-    redisService.addSessionToUser(userId.toString(), sessionId);
+    sessionService.addSessionToUser(userId.toString(), sessionId);
 
     // 7. Set RT cookie
     writeCookie(response, "refreshToken", refreshToken,
@@ -855,7 +855,7 @@ AuthResponse exchangeTicket(
 );
 
 // Trong AuthServiceImplement.java — Fix #6: atomic delete chống TOCTOU
-private static final String TICKET_KEY_PREFIX = "oauth2:ticket:";
+// Prefix "oauth2:ticket:" giờ định nghĩa trong Oauth2Constant.TICKET_PREFIX (common/constant)
 
 @Override
 public AuthResponse exchangeTicket(
@@ -864,7 +864,7 @@ public AuthResponse exchangeTicket(
         String userAgent,
         HttpServletResponse response) {
 
-    String redisKey = TICKET_KEY_PREFIX + ticket;
+    String redisKey = Oauth2Constant.TICKET_PREFIX + ticket;
 
     // Fix #6: Atomic delete — lấy value và xóa trong 1 bước
     //   Dùng Redis GETDEL (Redis ≥6.2) hoặc Lua script

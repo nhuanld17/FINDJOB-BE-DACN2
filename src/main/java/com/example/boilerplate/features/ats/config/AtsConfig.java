@@ -7,7 +7,7 @@ import org.springframework.context.annotation.Configuration;
 
 /**
  * Cấu hình ChatClient bean cho ATS scoring (Groq).
- * <p>
+ * 
  * Spring AI auto-config tạo {@link org.springframework.ai.openai.OpenAiChatModel}
  * (bean ChatModel), nhưng KHÔNG tạo ChatClient — cần @Bean thủ công.
  */

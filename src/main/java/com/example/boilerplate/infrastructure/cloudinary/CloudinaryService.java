@@ -16,15 +16,13 @@ import java.util.Set;
 /**
  * Service xử lý upload file lên Cloudinary CDN.
  *
- * <p>Hỗ trợ upload ảnh đại diện, ảnh bìa công ty, CV, ...
+ * Hỗ trợ upload ảnh đại diện, ảnh bìa công ty, CV, ...
  *
- * <p>Usage:
- * <pre>{@code
- * String url = cloudinaryService.uploadFile(file, "companies/logos", CloudinaryService.IMAGE_TYPES);
- * }</pre>
+ * Usage:
+ *   String url = cloudinaryService.uploadFile(file, "companies/logos", CloudinaryService.IMAGE_TYPES);
  *
- * <p><b>Lưu ý:</b> Dùng {@link MultipartFile#getBytes()} để upload — phù hợp với file nhỏ
- * (&lt; 5MB như logo, ảnh bìa). Với file lớn hơn, cần refactor sang InputStream.
+ * Lưu ý: Dùng {@link MultipartFile#getBytes()} để upload — phù hợp với file nhỏ
+ * (dưới 5MB như logo, ảnh bìa). Với file lớn hơn, cần refactor sang InputStream.
  */
 @Slf4j
 @Service
@@ -63,11 +61,11 @@ public class CloudinaryService {
     /**
      * Xóa file trên Cloudinary.
      *
-     * <p>Chấp nhận cả publicId lẫn URL đầy đủ:
-     * <ul>
-     *   <li>{@code deleteFile("companies/logos/abc123")} — publicId thuần</li>
-     *   <li>{@code deleteFile("https://res.cloudinary.com/.../abc123.jpg")} — URL, tự extract publicId</li>
-     * </ul>
+     * Chấp nhận cả publicId lẫn URL đầy đủ:
+     * 
+     *   - {@code deleteFile("companies/logos/abc123")} — publicId thuần
+     *   - {@code deleteFile("https://res.cloudinary.com/.../abc123.jpg")} — URL, tự extract publicId
+     * 
      *
      * @param urlOrPublicId Public ID hoặc URL Cloudinary của file cần xóa
      */
@@ -87,10 +85,10 @@ public class CloudinaryService {
     /**
      * Trích xuất publicId từ URL Cloudinary.
      *
-     * <p>VD: {@code https://res.cloudinary.com/demo/image/upload/v12345/companies/logos/abc123.jpg}
+     * VD: {@code https://res.cloudinary.com/demo/image/upload/v12345/companies/logos/abc123.jpg}
      * → {@code companies/logos/abc123}
      *
-     * <p><b>Lưu ý:</b> Chỉ xử lý URL <b>không</b> chứa transformation segment
+     * Lưu ý: Chỉ xử lý URL không chứa transformation segment
      * (VD: {@code /upload/c_fill,w_300/v12345/...}).
      * Nếu sau này cần, phải mở rộng hàm này để skip transformation segment.
      */

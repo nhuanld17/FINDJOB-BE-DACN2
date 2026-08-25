@@ -63,17 +63,26 @@ Normally logout should not throw business errors. Unexpected server errors can s
 ## 5. Endpoint Details
 
 ## 5.1 `POST /logout`
-Clear refresh session and remove refresh token cookie.
+Clear refresh session and remove refresh token.
 
-Request:
-- Body: none
-- Cookie: `refreshToken` (optional)
+> 🔄 **Cập nhật 2026-08-06:** dual-mode — Mobile gửi refresh token trong body, Web gửi qua cookie.
+
+Request (dual-mode, chọn 1 trong 2):
+- **Mobile:** body `{ "refreshToken": "..." }`
+- **Web:** cookie `refreshToken` (body rỗng)
 - Authorization header: not required (endpoint is under `/api/v1/auth/**`)
+
+```json
+{
+  "refreshToken": "eyJhbGciOiJIUzUxMiJ9..."
+}
+```
 
 Success:
 - HTTP `200`
 - Response: `APIResponse.success()`
-- Response header: `Set-Cookie` clears `refreshToken`
+- Web: Response header `Set-Cookie` clears `refreshToken`
+- Mobile: server xoá Redis session tương ứng (không có cookie để clear)
 
 Expected behavior (server-side):
 - Always clears `refreshToken` cookie

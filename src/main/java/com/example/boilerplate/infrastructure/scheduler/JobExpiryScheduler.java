@@ -12,10 +12,10 @@ import java.time.LocalDate;
 
 /**
  * Scheduler tự động cập nhật trạng thái job khi hết hạn.
- * <p>
+ * 
  * Chạy mỗi ngày vào lúc 00:00 (nửa đêm) để tìm tất cả job đang ACTIVE
  * nhưng đã quá {@code expiryDate} và đổi status thành {@link JobStatus#EXPIRED}.
- * <p>
+ * 
  * Việc này đảm bảo dữ liệu trong DB luôn chính xác, không cần dựa vào
  * filter runtime ở mỗi query (dù các API search/list cũng đã filter {@code expiryDate} riêng).
  */
@@ -28,11 +28,8 @@ public class JobExpiryScheduler {
 
     /**
      * Auto-expire jobs mỗi ngày lúc 00:00.
-     * <p>
+     * 
      * Cron expression: {@code 0 0 0 * * ?} = chạy vào 00:00:00 mỗi ngày.
-     * <p>
-     * Atomic: tìm tất cả job ACTIVE có {@code expiryDate < hôm nay},
-     * set status = EXPIRED, save batch.
      */
     @Scheduled(cron = "0 0 0 * * ?")
     @Transactional
@@ -49,6 +46,6 @@ public class JobExpiryScheduler {
         expiredJobs.forEach(job -> job.setStatus(JobStatus.EXPIRED));
         jobRepository.saveAll(expiredJobs);
 
-        log.info("Auto-expired {} jobs (status ACTIVE → EXPIRED)", expiredJobs.size());
+        log.info("Auto-expired {} jobs (status ACTIVE -> EXPIRED)", expiredJobs.size());
     }
 }

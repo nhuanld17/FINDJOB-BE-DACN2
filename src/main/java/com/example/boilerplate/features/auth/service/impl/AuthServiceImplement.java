@@ -9,6 +9,7 @@ import com.example.boilerplate.features.auth.dto.request.VerifyOtpRequest;
 import com.example.boilerplate.features.auth.dto.response.*;
 import com.example.boilerplate.features.auth.service.AuthService;
 import com.example.boilerplate.features.auth.service.OtpService;
+import com.example.boilerplate.features.auth.service.SessionService;
 import com.example.boilerplate.features.auth.service.TokenBlacklistService;
 import com.example.boilerplate.features.company.service.CompanyService;
 import com.example.boilerplate.features.employee.entity.Employee;
@@ -20,13 +21,12 @@ import com.example.boilerplate.features.user.repository.UserRepository;
 import com.example.boilerplate.infrastructure.mail.EmailService;
 import com.example.boilerplate.infrastructure.redis.RedisService;
 import com.example.boilerplate.infrastructure.security.CustomUserDetails;
-import com.example.boilerplate.infrastructure.security.oauth2.JwtUtil;
+import com.example.boilerplate.infrastructure.security.jwt.JwtUtil;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.ResponseCookie;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.BadCredentialsException;
@@ -50,9 +50,9 @@ import java.util.concurrent.TimeUnit;
 public class AuthServiceImplement implements AuthService {
 
     private static final long PENDING_TTL_MINUTES = 10L;
-    private static final String TICKET_KEY_PREFIX = "oauth2:ticket:";
 
     private final RedisService redisService;
+    private final SessionService sessionService;
     private final UserRepository userRepository;
     private final RoleRepository roleRepository;
     private final PasswordEncoder passwordEncoder;
@@ -62,7 +62,6 @@ public class AuthServiceImplement implements AuthService {
     private final JwtUtil jwtUtil;
     private final TokenBlacklistService tokenBlacklistService;
     private final RequestUtils requestUtils;
-    private final StringRedisTemplate stringRedisTemplate;
     private final CompanyService companyService;
     private final EmployeeRepository employeeRepository;
 
@@ -471,8 +470,8 @@ public class AuthServiceImplement implements AuthService {
         
         // Phòng hờ: xóa thẳng pending token hiện tại + reverse index của user,
         // đề phòng reverse index bị lệch (stale) khiến clearAll ở trên dọn không sạch.
-        redisService.delete("pending:" + pendingToken);
-        redisService.delete("pending:user:" + uid);
+        redisService.delete(PendingTokenConstant.PREFIX + pendingToken);
+        redisService.delete(PendingTokenConstant.USER_PREFIX + uid);
         
         // Xóa pending cookie ở client
         clearPendingCookie(httpServletResponse);
@@ -498,7 +497,7 @@ public class AuthServiceImplement implements AuthService {
 
         // Lấy userId của pendingToken hiện tại
         try {
-            String userId = redisService.getString("pending:" + pendingToken);
+            String userId = redisService.getString(PendingTokenConstant.PREFIX + pendingToken);
 
             // Nếu user id null thì có nghĩa phiên xác minh otp đã hết hạn
             // xóa luôn pendingCookie
@@ -694,21 +693,20 @@ public class AuthServiceImplement implements AuthService {
         }
 
         // kiểm tra session có tồn tại không
-        String sessionKey = RedisService.SESSION_KEY_PREFIX + sessionIdFromToken;
-        if (!redisService.hasKey(sessionKey)) {
+        if (!sessionService.hasSession(sessionIdFromToken)) {
             clearRefreshTokenCookie(httpServletResponse);
             throw new AppException(ErrorCode.SESSION_INACTIVE);
         }
 
         // Kiểm tra status trong session:{sessionId} có còn active không
-        Object statusObj = redisService.getSessionField(sessionIdFromToken, "status");
-        if (statusObj == null || !"ACTIVE".equals(statusObj.toString())) {
+        Object statusObj = sessionService.getSessionField(sessionIdFromToken, SessionConstant.STATUS);
+        if (statusObj == null || !SessionConstant.STATUS_ACTIVE.equals(statusObj.toString())) {
             clearRefreshTokenCookie(httpServletResponse);
             throw new AppException(ErrorCode.SESSION_INACTIVE);
         }
 
         // Kiểm tra jti của token và jtiRefreshToken trong session có giống nhau không
-        Object currentRefreshJtiObj = redisService.getSessionField(sessionIdFromToken, "refreshJtiCurrent");
+        Object currentRefreshJtiObj = sessionService.getSessionField(sessionIdFromToken, SessionConstant.CURRENT_REFRESH_JTI);
         if (currentRefreshJtiObj == null) {
             clearRefreshTokenCookie(httpServletResponse);
             throw new AppException(ErrorCode.SESSION_INACTIVE);
@@ -716,7 +714,7 @@ public class AuthServiceImplement implements AuthService {
 
         String jtiRefreshTokenFromSession = currentRefreshJtiObj.toString();
         if (!jtiRefreshTokenFromSession.equals(jtiFromToken)) {
-            redisService.updateSessionField(sessionIdFromToken, "status", "REVOKED");
+            sessionService.updateSessionField(sessionIdFromToken, SessionConstant.STATUS, SessionConstant.STATUS_REVOKED);
             clearRefreshTokenCookie(httpServletResponse);
             tokenBlacklistService.revokeRefreshToken(jtiFromToken, jwtUtil.remainingTimeOf(refreshToken));
             throw new AppException(ErrorCode.TOKEN_REUSE_DETECTED);
@@ -752,18 +750,18 @@ public class AuthServiceImplement implements AuthService {
         String newRefreshToken = jwtUtil.generateRefreshToken(userDetails, sessionIdFromToken, deviceIdFromToken);
 
         // CỐ Ý KHÔNG blacklist refresh token cũ ở đây.
-        // Chống reuse đã dựa vào refreshJtiCurrent rồi: RT cũ có jti != refreshJtiCurrent, nên nếu bị
+        // Chống reuse đã dựa vào currentRefreshJti rồi: RT cũ có jti != currentRefreshJti, nên nếu bị
         // replay sẽ rơi đúng vào nhánh reuse ở trên (set status = REVOKED + ném 3013) → giết cả phiên.
         // Nếu blacklist RT cũ ở đây, guard TOKEN_REVOKED (2010) chạy trước sẽ chặn mất, không bao giờ
         // tới được nhánh reuse → replay token bị lộ chỉ nhận 2010 mà session vẫn ACTIVE (mất tính năng
         // "phát hiện lộ token ⇒ vô hiệu hóa cả family"). RT cũ vẫn "chết" nhờ jti không còn khớp.
 
-        // update session:{sessionId}.refreshJtiCurrent = jti của refreshToken mới được cấp
+        // update session:{sessionId}.currentRefreshJti = jti của refreshToken mới được cấp
         String newRefreshJti = jwtUtil.extractJti(newRefreshToken);
-        redisService.updateSessionField(sessionIdFromToken, "refreshJtiCurrent", newRefreshJti);
+        sessionService.updateSessionField(sessionIdFromToken, SessionConstant.CURRENT_REFRESH_JTI, newRefreshJti);
 
         // Update lastseen  trong session:{sessionId}
-        redisService.updateSessionField(sessionIdFromToken, "lastSeen", LocalDateTime.now().toString());
+        sessionService.updateSessionField(sessionIdFromToken, SessionConstant.LAST_SEEN, LocalDateTime.now().toString());
 
         // ghi refreshToken vào cookie
         writeCookie(
@@ -810,8 +808,8 @@ public class AuthServiceImplement implements AuthService {
 
         // Lấy acccesstoken từ Authorization Bearer, nếu không có thì bỏ qua
         String accessToken = null;
-        if (authorizationHeader != null && authorizationHeader.startsWith("Bearer ")) {
-            accessToken = authorizationHeader.substring(7);
+        if (authorizationHeader != null && authorizationHeader.startsWith(JwtConstant.BEARER_PREFIX)) {
+            accessToken = authorizationHeader.substring(JwtConstant.BEARER_PREFIX.length());
         }
 
         String username;
@@ -827,12 +825,11 @@ public class AuthServiceImplement implements AuthService {
         }
 
         // Kiểm tra session:{sessionId} có tồn tại không
-        String sessionKey = RedisService.SESSION_KEY_PREFIX + sessionIdFromToken;
-        if (!redisService.hasKey(sessionKey)) {
+        if (!sessionService.hasSession(sessionIdFromToken)) {
             return;
         }
 
-        Object currentRefreshJtiObj = redisService.getSessionField(sessionIdFromToken, "refreshJtiCurrent");
+        Object currentRefreshJtiObj = sessionService.getSessionField(sessionIdFromToken, SessionConstant.CURRENT_REFRESH_JTI);
         String currentRefreshJti = currentRefreshJtiObj != null ? currentRefreshJtiObj.toString() : null;
 
         String jtiAccessToken = null;
@@ -848,12 +845,12 @@ public class AuthServiceImplement implements AuthService {
         }
 
         // Xóa session:{sessionId}
-        redisService.deleteSession(sessionIdFromToken);
+        sessionService.deleteSession(sessionIdFromToken);
 
         // xóa sessionId khỏi user:sessions:{userId} — best-effort: nếu không tra ra
         // user thì bỏ qua bước này, KHÔNG throw, để logout vẫn tiếp tục blacklist token.
         userRepository.findByUsername(username).ifPresent(user ->
-                redisService.removeSessionFromUser(user.getId().toString(), sessionIdFromToken));
+                sessionService.removeSessionFromUser(user.getId().toString(), sessionIdFromToken));
 
         // lưu Access Token và Refresh Token vào blacklist
         if (jtiAccessToken != null && remainingAccessToken != null && remainingAccessToken > 0) {
@@ -909,7 +906,7 @@ public class AuthServiceImplement implements AuthService {
         }
 
         // Lấy tất cả session của user
-        Set<Object> allSessions = redisService.getUserSessions(userId.toString());
+        Set<Object> allSessions = sessionService.getUserSessions(userId.toString());
         if (allSessions == null || allSessions.isEmpty()) return;
 
         for (Object sessionIdObj : allSessions) {
@@ -917,17 +914,17 @@ public class AuthServiceImplement implements AuthService {
             if (sessionId.equals(currentSessionId)) continue; // bỏ qua thiết bị hiện tại
 
             // Blacklist refresh token của session này
-            Object refreshJti = redisService.getSessionField(sessionId, "refreshJtiCurrent");
+            Object refreshJti = sessionService.getSessionField(sessionId, SessionConstant.CURRENT_REFRESH_JTI);
             if (refreshJti != null) {
-                long sessionTtl = redisService.getTtl(RedisService.SESSION_KEY_PREFIX + sessionId);
+                long sessionTtl = sessionService.getSessionTtl(sessionId);
                 if (sessionTtl > 0) {
                     tokenBlacklistService.revokeRefreshToken(refreshJti.toString(), sessionTtl);
                 }
             }
 
             // Xoá session khỏi Redis
-            redisService.deleteSession(sessionId);
-            redisService.removeSessionFromUser(userId.toString(), sessionId);
+            sessionService.deleteSession(sessionId);
+            sessionService.removeSessionFromUser(userId.toString(), sessionId);
 
             log.info("Revoked session {} of user {} after password change", sessionId, userId);
         }
@@ -957,7 +954,7 @@ public class AuthServiceImplement implements AuthService {
         String refreshToken = jwtUtil.generateRefreshToken(userDetails, sessionId, deviceId);
 
         // 5. Lưu session vào redis
-        redisService.createSession(
+        sessionService.createSession(
                 sessionId,
                 userDetails.getUsername(),
                 deviceId,
@@ -968,7 +965,7 @@ public class AuthServiceImplement implements AuthService {
         );
 
         // 6. Lưu sessionId vào danh sách session của user hiện tại
-        redisService.addSessionToUser(userDetails.getId().toString(), sessionId);
+        sessionService.addSessionToUser(userDetails.getId().toString(), sessionId);
 
         // 7. Thêm refreshToken vào cookie HttpOnly
         writeCookie(
@@ -1137,11 +1134,11 @@ public class AuthServiceImplement implements AuthService {
                                        String clientIp,
                                        String userAgent,
                                        HttpServletResponse httpServletResponse) {
-        String redisKey = TICKET_KEY_PREFIX + ticket;
+        String redisKey = Oauth2Constant.TICKET_PREFIX + ticket;
 
         // Fix #6: Atomic GET+DELETE — opsForValue().getAndDelete() có sẵn từ Spring Data Redis 3.x,
         //   → 2 request song song cùng ticket chỉ 1 trong 2 lấy được value.
-        String userIdStr = stringRedisTemplate.opsForValue().getAndDelete(redisKey);
+        String userIdStr = redisService.getAndDelete(redisKey);
 
         if (userIdStr == null || userIdStr.isBlank()) {
             log.warn("Exchange ticket failed: key '{}' not found in Redis (expired/consumed/missing)", redisKey);
@@ -1358,17 +1355,17 @@ public class AuthServiceImplement implements AuthService {
 
     private String rotatePendingToken(Long id) {
         // xóa pending token cũ
-        String oldToken = redisService.getString("pending:user:" + id);
+        String oldToken = redisService.getString(PendingTokenConstant.USER_PREFIX + id);
         if (oldToken != null && !oldToken.isBlank()) {
-            redisService.delete("pending:" + oldToken);
+            redisService.delete(PendingTokenConstant.PREFIX + oldToken);
         }
 
         // tạo token mới
         String newToken = UUID.randomUUID().toString();
 
         // lưu pending token mới và reverse pending token mới
-        redisService.set("pending:" + newToken, id.toString(), PENDING_TTL_MINUTES, TimeUnit.MINUTES);
-        redisService.set("pending:user:" + id, newToken, PENDING_TTL_MINUTES, TimeUnit.MINUTES);
+        redisService.set(PendingTokenConstant.PREFIX + newToken, id.toString(), PENDING_TTL_MINUTES, TimeUnit.MINUTES);
+        redisService.set(PendingTokenConstant.USER_PREFIX + id, newToken, PENDING_TTL_MINUTES, TimeUnit.MINUTES);
 
         return newToken;
     }
@@ -1404,12 +1401,12 @@ public class AuthServiceImplement implements AuthService {
 
     private String resolveOrCreatePendingToken(Long id, String pendingToken) {
         // Ưu tiên token đang map sẵn theo user trong Redis
-        String pendingTokenFromRedis = redisService.getString("pending:user:" + id);
+        String pendingTokenFromRedis = redisService.getString(PendingTokenConstant.USER_PREFIX + id);
 
         if (pendingTokenFromRedis != null && !pendingTokenFromRedis.isBlank()) {
             // Gia hạn thời gian sống TTL cho pendingToken và reverse pending token
-            redisService.set("pending:" + pendingTokenFromRedis, id.toString(), PENDING_TTL_MINUTES, TimeUnit.MINUTES);
-            redisService.set("pending:user:" + id, pendingTokenFromRedis, PENDING_TTL_MINUTES, TimeUnit.MINUTES);
+            redisService.set(PendingTokenConstant.PREFIX + pendingTokenFromRedis, id.toString(), PENDING_TTL_MINUTES, TimeUnit.MINUTES);
+            redisService.set(PendingTokenConstant.USER_PREFIX + id, pendingTokenFromRedis, PENDING_TTL_MINUTES, TimeUnit.MINUTES);
             return pendingTokenFromRedis;
         }
 
@@ -1418,7 +1415,7 @@ public class AuthServiceImplement implements AuthService {
         String tokenToUse = null;
         if (pendingToken != null && !pendingToken.isBlank()) {
             // Lấy userId của token
-            String ownerId = redisService.getString("pending:" + pendingToken);
+            String ownerId = redisService.getString(PendingTokenConstant.PREFIX + pendingToken);
 
             // kiểm userId của token có phải là id đang đăng kí ko
             if (ownerId != null && ownerId.equals(id.toString())) {
@@ -1432,8 +1429,8 @@ public class AuthServiceImplement implements AuthService {
         }
 
         // gia hạn lại thời gian cho pending token và reverse pending token
-        redisService.set("pending:" + tokenToUse, id.toString(), PENDING_TTL_MINUTES, TimeUnit.MINUTES);
-        redisService.set("pending:user:" + id, tokenToUse, PENDING_TTL_MINUTES, TimeUnit.MINUTES);
+        redisService.set(PendingTokenConstant.PREFIX + tokenToUse, id.toString(), PENDING_TTL_MINUTES, TimeUnit.MINUTES);
+        redisService.set(PendingTokenConstant.USER_PREFIX + id, tokenToUse, PENDING_TTL_MINUTES, TimeUnit.MINUTES);
 
         return tokenToUse;
     }

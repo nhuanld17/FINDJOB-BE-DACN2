@@ -1,0 +1,37 @@
+# ===== MAVEN / BUILD =====
+target/
+HELP.md
+.mvn/wrapper/maven-wrapper.jar
+
+# ===== ENV & SECRETS (tuyệt đối không đưa vào image) =====
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.jks
+
+# ===== GIT =====
+.git
+.gitignore
+.gitattributes
+
+# ===== IDE / TOOLS =====
+.idea/
+.vscode/
+.zed/
+.claude/
+.serena/
+.cursor/
+.codebase-memory/
+.code-review-graph/
+*.iml
+*.iws
+
+# ===== DOCS / THIRD-PARTY =====
+docs/
+HTTP Request/
+
+# ===== FILE RÁC / NHẠY CẢM =====
+nul
+keyOrSth.txt

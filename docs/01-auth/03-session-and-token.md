@@ -4,7 +4,7 @@
 > Login / Refresh token / Logout / `JwtAuthFilter`: JWT mang claim gì, Redis lưu gì, ai là
 > "nguồn sự thật" khi JWT và Redis lệch nhau.
 >
-> Bám sát code: `JwtUtil` + `RedisService` (nhóm `session:*` / `user:sessions:*`) +
+> Bám sát code: `JwtUtil` + `SessionService` (nhóm `session:*` / `user:sessions:*`, prefix private trong `SessionServiceImpl`) +
 > `TokenBlacklistServiceImpl` (nhóm `blacklist:*`) + `JwtAuthFilter` + `AuthServiceImplement`
 > (`login` / `refreshToken` / `logout`). Cập nhật: 2026-07-05.
 >
@@ -40,7 +40,7 @@ Hệ thống dùng **JWT lai session** (hybrid), không phải JWT thuần state
                      └────────────────────────┘     (status=ACTIVE, username, deviceId)
 
                      ┌────────────────────────┐
-   refreshToken ────►│   refreshToken()        │──► còn phải khớp refreshJtiCurrent
+   refreshToken ────►│   refreshToken()        │──► còn phải khớp currentRefreshJti
    (cookie)          │   verify chữ ký + exp   │     trong session:{sessionId}
                      └────────────────────────┘
 ```
@@ -79,13 +79,13 @@ Ký bằng HMAC-SHA (`Keys.hmacShaKeyFor`) với secret từ `jwt.secret` (env `
 
 ### Nhóm 1 — Session (nguồn sự thật về phiên đăng nhập)
 
-**`session:{sessionId}`** — kiểu **Hash**, tạo bởi `RedisService.createSession(...)` lúc login:
+**`session:{sessionId}`** — kiểu **Hash**, tạo bởi `SessionService.createSession(...)` lúc login:
 
 | Field | Giá trị | Cập nhật khi nào |
 |---|---|---|
 | `username` | username user | chỉ ghi lúc tạo |
 | `deviceId` | deviceId lúc login | chỉ ghi lúc tạo |
-| `refreshJtiCurrent` | `jti` của **refresh token đang hợp lệ** | ghi lúc tạo; **ghi đè** mỗi lần refresh thành công (rotation) |
+| `currentRefreshJti` | `jti` của **refresh token đang hợp lệ** | ghi lúc tạo; **ghi đè** mỗi lần refresh thành công (rotation) |
 | `status` | `ACTIVE` \| `REVOKED` | ghi `ACTIVE` lúc tạo; chuyển `REVOKED` khi phát hiện reuse |
 | `createdAt` | timestamp lúc tạo | chỉ ghi lúc tạo |
 | `lastSeen` | timestamp | cập nhật mỗi request hợp lệ qua `JwtAuthFilter`, và mỗi lần refresh |
@@ -126,7 +126,7 @@ Redis
 ```
 
 > Nhóm `pending:*` (pending token cho luồng OTP) là một hệ key **khác**, không liên quan tới
-> session/token đăng nhập — xem `1. Register & OTP.md` §2.
+> session/token đăng nhập — xem `1. Register & OTP.md` §2. (Prefix `pending:*` → `PendingTokenConstant`, `otp:*` → `OtpConstant` ở `common/constant/`.)
 
 ---
 
@@ -134,7 +134,7 @@ Redis
 
 ```
 login
-  │  createSession() → session:{sessionId} status=ACTIVE, refreshJtiCurrent=jti(RT₀)
+  │  createSession() → session:{sessionId} status=ACTIVE, currentRefreshJti=jti(RT₀)
   │  addSessionToUser()
   ▼
 mỗi request (accessToken)  ──► JwtAuthFilter: verify + đối chiếu session (status/username/deviceId)
@@ -142,8 +142,8 @@ mỗi request (accessToken)  ──► JwtAuthFilter: verify + đối chiếu se
   │                              → không hợp lệ: 401/403 tương ứng (không đổi session)
   ▼
 refresh (refreshToken RTₙ)
-  │  jti(RTₙ) == refreshJtiCurrent ?
-  │     ├─ ĐÚNG  → cấp AT mới + RT mới (RTₙ₊₁), ghi đè refreshJtiCurrent = jti(RTₙ₊₁)
+  │  jti(RTₙ) == currentRefreshJti ?
+  │     ├─ ĐÚNG  → cấp AT mới + RT mới (RTₙ₊₁), ghi đè currentRefreshJti = jti(RTₙ₊₁)
   │     │          (RTₙ KHÔNG bị blacklist ngay — xem §8 & doc Refresh token)
   │     └─ SAI    → status = REVOKED, blacklist jti(RTₙ), ném TOKEN_REUSE_DETECTED
   │                 → session coi như CHẾT, phải login lại
@@ -181,7 +181,7 @@ Hệ quả trực tiếp của triết lý này:
   session (`3016`/`3001`), hoặc user vừa bị ban/deactivate (`2007`/`2005`). Đây chính là cách hệ
   thống "thu hồi" một JWT vốn dĩ stateless.
 - **Refresh token đúng chữ ký, đúng hạn** vẫn bị từ chối nếu `jti` không khớp
-  `refreshJtiCurrent` — vì tại thời điểm đó, session coi token khác mới là "bản hiện hành".
+  `currentRefreshJti` — vì tại thời điểm đó, session coi token khác mới là "bản hiện hành".
 - Ngược lại, **session còn `ACTIVE`** không có nghĩa mọi token cũ đều dùng được — chỉ **token
   đang khớp claim hiện tại của session** mới qua được các bước đối chiếu.
 
@@ -194,7 +194,7 @@ ký).
 
 ## 6. TTL 7 ngày & fixed-window
 
-`RedisService.createSession(...)` set TTL cho `session:{sessionId}` = **7 ngày, đúng 1 lần lúc
+`SessionService.createSession(...)` set TTL cho `session:{sessionId}` = **7 ngày, đúng 1 lần lúc
 tạo**. Các thao tác sau đó (`updateSessionField` khi refresh, khi cập nhật `lastSeen`) dùng
 `HSET` — **không** đụng tới TTL của key. Nghĩa là:
 
@@ -226,7 +226,7 @@ revoke sớm).
 
 | Claim JWT | Có ở access? | Có ở refresh? | Dùng để |
 |---|:--:|:--:|---|
-| `jti` | ✓ | ✓ | blacklist lookup; so khớp `refreshJtiCurrent` (chỉ RT) |
+| `jti` | ✓ | ✓ | blacklist lookup; so khớp `currentRefreshJti` (chỉ RT) |
 | `sub` (username) | ✓ | ✓ | tra user, so khớp `session.username` |
 | `roles` | ✓ | ✓ | cấp quyền (`Authorities`) khi build `Authentication` |
 | `sessionId` | ✓ | ✓ | trỏ tới `session:{sessionId}` |
@@ -241,7 +241,7 @@ revoke sớm).
   `deleteSession` (xóa hẳn), reuse-detect dùng `updateSessionField("status", "REVOKED")` trực
   tiếp. Hàm `revokeSession` là tiện ích sẵn có nhưng chưa được dùng tới trong luồng hiện tại.
 - **Reuse-detect KHÔNG blacklist ngay refresh token vừa rotate xong** (RTₙ sau khi cấp RTₙ₊₁).
-  Lý do: cơ chế chống-reuse đã dựa vào so khớp `refreshJtiCurrent`, nên RT cũ tự động "chết" khi
+  Lý do: cơ chế chống-reuse đã dựa vào so khớp `currentRefreshJti`, nên RT cũ tự động "chết" khi
   không còn khớp — nếu bị replay sẽ tự rơi vào nhánh reuse (giết cả session). Blacklist thêm ở
   đây sẽ khiến guard `TOKEN_REVOKED` (2010) chặn trước, không bao giờ tới được nhánh phát hiện
   reuse → mất khả năng "phát hiện lộ token ⇒ hủy cả family". Chi tiết & hệ quả bảo mật xem

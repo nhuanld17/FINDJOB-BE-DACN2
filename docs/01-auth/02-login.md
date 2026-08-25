@@ -7,7 +7,7 @@
 >   verify (tái dùng đúng "4 đồng hồ OTP" của luồng đăng ký).
 >
 > Bám sát code: `AuthServiceImplement.login` + `handleInactiveUserLogin` + `LoginRequest` +
-> `AuthResponse`/`LoginInactiveResponse` + `RedisService.createSession`. Cập nhật: 2026-07-05.
+> `AuthResponse`/`LoginInactiveResponse` + `SessionService.createSession`. Cập nhật: 2026-07-05.
 >
 > 📎 Doc này dùng lại khái niệm **attempts / wrong / otp / cooldown / pending token** đã mô tả kỹ
 > trong `1. Register & OTP.md` (mục *"Bốn đồng hồ OTP"*). Ở đây chỉ nhắc lại phần liên quan.
@@ -66,7 +66,8 @@ login(email, password, deviceId, deviceName, pendingToken?)
 | `deviceId` | UUID | `@NotNull` | `1001` BLANK |
 | `deviceName` | String | `@NotBlank`, `@Size(max=100)` | `1001` BLANK / `1002` OUT_OF_SIZE |
 
-Cookie `pendingToken` (tùy chọn) — chỉ dùng cho **luồng inactive** (để tái dùng/xoay phiên OTP).
+`pendingToken` (tùy chọn) — cookie web hoặc header `X-Pending-Token` mobile — chỉ dùng cho
+**luồng inactive** (để tái dùng/xoay phiên OTP). **Dual-mode:** server ưu tiên header, fallback cookie.
 
 Trước khi xử lý: email được chuẩn hóa `trim().toLowerCase()`, password `trim()`.
 
@@ -84,13 +85,13 @@ Sau khi `authenticate` OK và tài khoản active (`isDeleted=false`, `isActive=
 2. **Sinh 2 token** bằng `JwtUtil` — cùng bộ claim, chỉ khác `exp` & `jti`:
    - `accessToken` (sống ngắn), `refreshToken` (sống 7 ngày).
    - Claim mỗi token: `jti` (UUID), `sub` = **username**, `roles`, `sessionId`, `deviceId`, `iat`, `exp`.
-3. **Lưu session vào Redis** — `redisService.createSession(...)` ghi hash `session:{sessionId}`:
+3. **Lưu session vào Redis** — `sessionService.createSession(...)` ghi hash `session:{sessionId}`:
 
    | Field | Giá trị |
    |---|---|
    | `username` | username của user |
    | `deviceId` | từ request |
-   | `refreshJtiCurrent` | `jti` của **refresh token** vừa cấp |
+   | `currentRefreshJti` | `jti` của **refresh token** vừa cấp |
    | `status` | `ACTIVE` |
    | `createdAt` / `lastSeen` | thời điểm hiện tại |
    | `deviceName` / `ip` / `userAgent` | metadata thiết bị & request |
@@ -99,7 +100,8 @@ Sau khi `authenticate` OK và tài khoản active (`isDeleted=false`, `isActive=
    kể từ lúc login, khớp hạn của refresh token & cookie).
 4. **Thêm vào danh sách phiên của user**: `addSessionToUser(userId, sessionId)` → set `user:sessions:{userId}`.
 5. **Ghi cookie `refreshToken`**: `HttpOnly`, `Secure`, `SameSite=Strict`, `path=/`, `maxAge=7 ngày`.
-6. **Trả `AuthResponse`**:
+6. **Ghi cookie `refreshToken`** (web) — mobile không cần vì đã có `data.refreshToken`.
+7. **Trả `AuthResponse`**:
 
 ```jsonc
 {
@@ -109,14 +111,17 @@ Sau khi `authenticate` OK và tài khoản active (`isDeleted=false`, `isActive=
     "id": 123,
     "username": "alice01",
     "roles": [ ... ],
-    "accessToken": "eyJhbGci..."   // access token trả trong BODY
+    "accessToken": "eyJhbGci...",
+    "refreshToken": "eyJhbGci...",  // null với web (chỉ cookie), có giá trị với mobile
+    "hasPassword": true              // false với user Google (password = NULL) — FE dùng để
+                                      // quyết định form đổi mk (3 field) hay đặt mk lần đầu (2 field)
   }
 }
 ```
 
-> **Access token nằm ở body, refresh token nằm ở cookie.** FE giữ access token (thường trong bộ
-> nhớ) để gắn vào header `Authorization: Bearer ...`; refresh token do trình duyệt tự quản qua
-> cookie HttpOnly, JS không đọc được → giảm rủi ro XSS.
+> **Dual-mode token:** access token nằm ở body (cả web lẫn mobile). **Refresh token:** web nhận qua
+> cookie HttpOnly (`data.refreshToken = null`, JS không đọc được → giảm rủi ro XSS); **mobile
+> nhận `data.refreshToken` trong body** và lưu secure store, gửi lại bằng body khi refresh/logout.
 
 ---
 

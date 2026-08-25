@@ -93,7 +93,7 @@ public class EmployeeService {
 
     /**
      * Tìm kiếm ứng viên (dành cho COMPANY — nhà tuyển dụng).
-     * <p>
+     * 
      * - CHỈ trả hồ sơ CÔNG KHAI (isPublic = true) — tôn trọng quyền riêng tư
      * - Loại user đã bị xoá mềm (ban)
      * - search: tìm theo tên / chức danh / kỹ năng (containsIgnoreCase)

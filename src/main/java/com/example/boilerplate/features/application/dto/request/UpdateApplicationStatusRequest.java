@@ -5,7 +5,7 @@ import jakarta.validation.constraints.NotNull;
 
 /**
  * Request cho COMPANY cập nhật trạng thái application.
- * <p>
+ * 
  * - status: bắt buộc (không được để CANCELLED — dành riêng cho employee)
  * - rejectedReason: bắt buộc nếu status = REJECTED
  * - recruiterNote: tuỳ chọn (ghi chú nội bộ của recruiter)

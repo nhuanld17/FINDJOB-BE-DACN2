@@ -25,7 +25,7 @@ public class ApplicationQueryDSL {
 
     /**
      * Lấy danh sách application của một job (dành cho COMPANY xem ứng viên).
-     * <p>
+     * 
      * JOIN FETCH employee + user để tránh N+1 khi map DTO.
      * Có thể lọc theo trạng thái application (PENDING, REVIEWING, ...).
      *

@@ -1,5 +1,6 @@
 package com.example.boilerplate.infrastructure.security.oauth2;
 
+import com.example.boilerplate.common.constant.Oauth2Constant;
 import com.example.boilerplate.common.exception.AccountBannedException;
 import com.example.boilerplate.common.response.ErrorResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -18,18 +19,18 @@ import java.io.IOException;
 import java.util.Arrays;
 
 /**
- * <h2>OidcLoginFailureHandler — Xử lý khi Google xác thực OIDC thất bại</h2>
+ * OidcLoginFailureHandler — Xử lý khi Google xác thực OIDC thất bại
  *
- * <h3>Vai trò:</h3>
+ * Vai trò:
  * Khi flow OIDC thất bại (user từ chối cấp quyền, email không verify,
  * account bị banned, internal error…), class này quyết định:
- * <ul>
- *   <li>Trả về <b>JSON error</b> cho Web (React SPA xử lý hiển thị)</li>
- *   <li>Redirect về <b>deep link mobile</b> kèm error code (app xử lý trên mobile)</li>
- * </ul>
+ * 
+ *   - Trả về JSON error cho Web (React SPA xử lý hiển thị)
+ *   - Redirect về deep link mobile kèm error code (app xử lý trên mobile)
+ * 
  *
- * <h3>Dual-mode response:</h3>
- * <pre>
+ * Dual-mode response:
+ * 
  * Web (không có return_url):
  *   Response 401/403 JSON:
  *   {
@@ -41,30 +42,30 @@ import java.util.Arrays;
  * Mobile (có return_url + whitelist scheme):
  *   Redirect: findjob://oauth/callback?error=3008
  *   → App mobile đọc param error → hiển thị thông báo lỗi
- * </pre>
+ * 
  *
- * <h3>Phân loại lỗi:</h3>
- * <ul>
- *   <li><b>AccountBannedException</b> → HTTP 403, code 2007 (ACCOUNT_BANNED)
- *       - User bị banned cố tình login Google → báo "Tài khoản đã bị khóa"</li>
- *   <li><b>Mọi lỗi khác</b> → HTTP 401, code 3008 (INVALID_CREDENTIALS)
+ * Phân loại lỗi:
+ * 
+ *   - AccountBannedException → HTTP 403, code 2007 (ACCOUNT_BANNED)
+ *       - User bị banned cố tình login Google → báo "Tài khoản đã bị khóa"
+ *   - Mọi lỗi khác → HTTP 401, code 3008 (INVALID_CREDENTIALS)
  *       - Google từ chối, email chưa verify, internal error…
- *       - Không leak chi tiết lỗi ra ngoài (tránh lộ thông tin cho attacker)</li>
- * </ul>
+ *       - Không leak chi tiết lỗi ra ngoài (tránh lộ thông tin cho attacker)
+ * 
  *
- * <h3>Bảo mật:</h3>
- * <ul>
- *   <li><b>Không leak internal error:</b> Mọi lỗi không phải AccountBannedException
- *       đều gộp vào "Xác thực Google thất bại" — attacker không biết chính xác lý do</li>
- *   <li><b>Whitelist scheme:</b> Chỉ redirect về deep link đã cấu hình (VD: {@code findjob://}),
- *       chặn open redirect attack</li>
- *   <li><b>GETDEL return_url:</b> Xóa key Redis ngay sau khi đọc — tránh sót state rác</li>
- *   <li><b>Log lỗi:</b> Ghi log chi tiết {@code exception.getMessage()} cho debug,
- *       không gửi ra response</li>
- * </ul>
+ * Bảo mật:
+ * 
+ *   - Không leak internal error: Mọi lỗi không phải AccountBannedException
+ *       đều gộp vào "Xác thực Google thất bại" — attacker không biết chính xác lý do
+ *   - Whitelist scheme: Chỉ redirect về deep link đã cấu hình (VD: {@code findjob://}),
+ *       chặn open redirect attack
+ *   - GETDEL return_url: Xóa key Redis ngay sau khi đọc — tránh sót state rác
+ *   - Log lỗi: Ghi log chi tiết {@code exception.getMessage()} cho debug,
+ *       không gửi ra response
+ * 
  *
- * <h3>Luồng xử lý:</h3>
- * <pre>
+ * Luồng xử lý:
+ * 
  * Google trả về lỗi / user hủy xác thực
  *      ↓
  * onAuthenticationFailure()
@@ -80,7 +81,7 @@ import java.util.Arrays;
  * │     (Mobile app handle)
  * └── KHÔNG → Trả JSON ErrorResponse
  *       (Web React handle)
- * </pre>
+ * 
  *
  * @see AuthenticationFailureHandler
  * @see com.example.boilerplate.common.exception.AccountBannedException
@@ -128,7 +129,7 @@ public class OidcLoginFailureHandler implements AuthenticationFailureHandler {
         // Mobile: nếu có return_url, redirect về app kèm error thay vì trả JSON
         String state = request.getParameter("state");
         String returnUrl = (state != null)
-                ? stringRedisTemplate.opsForValue().getAndDelete("oauth2:return:" + state)
+                ? stringRedisTemplate.opsForValue().getAndDelete(Oauth2Constant.RETURN_PREFIX + state)
                 : null;
 
         if (returnUrl != null && isAllowedMobileScheme(returnUrl)) {

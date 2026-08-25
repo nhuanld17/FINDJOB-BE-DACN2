@@ -22,7 +22,7 @@ import java.util.stream.Collectors;
 
 /**
  * QueryDSL cho Employee — tìm kiếm ứng viên (dành cho COMPANY).
- * <p>
+ * 
  * Pattern giống CompanyQueryDSL: BooleanBuilder + Projections.constructor
  * + PageImpl. Chỉ trả hồ sơ CÔNG KHAI (isPublic = true) và user chưa bị ban.
  */

@@ -46,15 +46,15 @@ public class RedisConfig {
     /**
      * RedisTemplate riêng cho OAuth2 Authorization Request.
      *
-     * <p>Dùng {@link JdkSerializationRedisSerializer} thay vì Jackson JSON vì
+     * Dùng {@link JdkSerializationRedisSerializer} thay vì Jackson JSON vì
      * {@link OAuth2AuthorizationRequest} chứa các class như
      * {@code OAuth2AuthorizationResponseType} mà Jackson không thể
      * deserialize được (thiếu default constructor / Jackson annotation).
      *
-     * <p>Vì {@code OAuth2AuthorizationRequest} implement {@link java.io.Serializable},
+     * Vì {@code OAuth2AuthorizationRequest} implement {@link java.io.Serializable},
      * JDK serialization hoạt động ổn định và an toàn cho dữ liệu tạm thời (TTL 120s).
      *
-     * <p>Dùng trong {@code RedisOAuth2AuthorizationRequestRepository}.
+     * Dùng trong {@code RedisOAuth2AuthorizationRequestRepository}.
      */
     @Bean
     public RedisTemplate<String, OAuth2AuthorizationRequest> oauth2StateRedisTemplate(

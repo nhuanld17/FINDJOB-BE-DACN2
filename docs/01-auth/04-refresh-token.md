@@ -5,7 +5,7 @@
 > cũ bị dùng lại → giết cả session).
 >
 > Bám sát code: `AuthServiceImplement.refreshToken` + `JwtUtil` + `RedisService` +
-> `TokenBlacklistServiceImpl`. Cập nhật: 2026-07-05.
+> `TokenBlacklistServiceImpl`. Cập nhật: 2026-07-05 (đối chiếu lại dual-mode 2026-08-06).
 >
 > 📎 Doc này giả định đã đọc `3. Kiến trúc Session & Token.md` (claim JWT, 2 nhóm key Redis,
 > triết lý "session là nguồn sự thật", TTL 7 ngày fixed-window). Ở đây chỉ tập trung vào **luồng
@@ -25,17 +25,24 @@
 
 ## 1. Vị trí trong vòng đời token
 
-`accessToken` sống ngắn, hết hạn thì FE gọi `refresh-token` bằng `refreshToken` (nằm trong cookie
-`HttpOnly`) để lấy `accessToken` mới **mà không bắt user đăng nhập lại** — miễn `refreshToken`
-còn hợp lệ và **session đứng sau nó còn sống** (xem triết lý "session là nguồn sự thật" ở doc 3).
+`accessToken` sống ngắn, hết hạn thì FE gọi `refresh-token` bằng `refreshToken` để lấy
+`accessToken` mới **mà không bắt user đăng nhập lại** — miễn `refreshToken` còn hợp lệ và
+**session đứng sau nó còn sống** (xem triết lý "session là nguồn sự thật" ở doc 3).
+
+**Dual-mode gửi RT (từ `AuthController.refreshToken`):**
+- **Web:** RT nằm trong cookie HttpOnly `refreshToken` — browser tự gửi kèm, không cần body.
+- **Mobile:** RT nằm trong **body JSON** `{ "refreshToken": "..." }` (lưu secure store).
+- Server ưu tiên body, không có body thì fallback cookie.
 
 ```
 AT hết hạn (JwtAuthFilter trả 3015 ACCESS_TOKEN_EXPIRED)
         │
         ▼
-FE gọi POST /refresh-token (cookie refreshToken tự động gửi kèm)
+FE gọi POST /refresh-token
+   web    → cookie refreshToken tự động gửi kèm
+   mobile → body { "refreshToken": "..." }
         │
-        ├─ hợp lệ  → AT mới (body) + RT mới (cookie, rotation)
+        ├─ hợp lệ  → AT mới (body) + RT mới (cookie web / body mobile — rotation)
         └─ không hợp lệ → 401/403 tương ứng, FE điều hướng về Login
 ```
 
@@ -48,11 +55,16 @@ Endpoint này nằm trong `PUBLIC_PATTERNS` (`/api/v1/auth/**`) nên **không** 
 
 | Input | Nguồn | Bắt buộc |
 |---|---|---|
-| `refreshToken` | Cookie `refreshToken` | không bắt buộc ở tầng HTTP (`@CookieValue(required=false)`), nhưng thiếu thì luôn thất bại |
+| `refreshToken` | **Body** `{ "refreshToken": "..." }` (mobile) **hoặc** Cookie `refreshToken` (web) | không bắt buộc ở tầng HTTP (`@RequestBody(required=false)` + `@CookieValue(required=false)`), nhưng thiếu cả 2 thì luôn thất bại |
 
-Không có request body. Output quan trọng nhất cũng là cookie: mỗi lần refresh **thành công**,
-server ghi đè cookie `refreshToken` bằng giá trị mới (rotation) — cùng thuộc tính như lúc login:
-`HttpOnly`, `Secure`, `SameSite=Strict`, `path=/`, `maxAge=7 ngày`.
+Request body (mobile):
+```json
+{ "refreshToken": "eyJhbGciOiJIUzUxMiJ9..." }
+```
+
+Mỗi lần refresh **thành công**, server **rotate**: ghi đè cookie `refreshToken` (web — cùng
+thuộc tính như lúc login: `HttpOnly`, `Secure`, `SameSite=Strict`, `path=/`, `maxAge=7 ngày`)
+**và/hoặc** trả RT mới trong body (mobile).
 
 ---
 
@@ -68,8 +80,8 @@ quan trọng — xem §5 để hiểu vì sao thứ tự "blacklist trước reu
 3. jti nằm trong blacklist:refresh:*?    → throw 2010 TOKEN_REVOKED         (⚠ không xóa cookie — xem §8)
 4. session:{sessionId} không tồn tại?    → xóa cookie, throw 3012 SESSION_INACTIVE
 5. session.status != ACTIVE?             → xóa cookie, throw 3012 SESSION_INACTIVE
-6. session.refreshJtiCurrent rỗng/null?  → xóa cookie, throw 3012 SESSION_INACTIVE
-7. jti (token) != refreshJtiCurrent?     → session.status=REVOKED + blacklist jti này
+6. session.currentRefreshJti rỗng/null?  → xóa cookie, throw 3012 SESSION_INACTIVE
+7. jti (token) != currentRefreshJti?     → session.status=REVOKED + blacklist jti này
                                             + xóa cookie, throw 3013 TOKEN_REUSE_DETECTED  ⭐
 8. tìm user theo username (từ sub)       → không thấy: throw 2001 USER_NOT_FOUND (không xóa cookie)
 9. user.isDeleted()?                     → xóa cookie, throw 2007 ACCOUNT_BANNED
@@ -98,11 +110,11 @@ Khi qua hết guard chain (RT hợp lệ, đúng phiên hiện hành, user còn 
 2. **Cấp `refreshToken` mới** (rotation) — `jwtUtil.generateRefreshToken(...)`, cùng `sessionId`/
    `deviceId`, nhưng `jti` mới và `exp` mới (+7 ngày kể từ **thời điểm refresh**, không phải kể
    từ login — khác với TTL của `session:{sessionId}` trong Redis, xem lưu ý ở §8 và ở doc 3 §6).
-3. **Cập nhật `session:{sessionId}.refreshJtiCurrent`** = `jti` của RT **mới** — đây là bước biến
+3. **Cập nhật `session:{sessionId}.currentRefreshJti`** = `jti` của RT **mới** — đây là bước biến
    RT cũ thành "không còn là bản hiện hành" nữa (nền tảng của reuse-detection, xem §5).
 4. **Cập nhật `session:{sessionId}.lastSeen`** = thời điểm hiện tại.
-5. **Ghi đè cookie `refreshToken`** bằng RT mới.
-6. Trả `AuthResponse` (accessToken mới trong body).
+5. **Ghi đè cookie `refreshToken`** bằng RT mới (web).
+6. Trả `AuthResponse` — accessToken mới + **`refreshToken` mới trong body (mobile)**; web: `refreshToken = null` (chỉ cookie).
 
 > **Không sinh `sessionId` mới khi refresh** — session vẫn là cùng một phiên xuyên suốt vòng đời
 > 7 ngày, chỉ có "credential" (RT/AT) được thay liên tục bên trong nó.
@@ -114,7 +126,7 @@ Khi qua hết guard chain (RT hợp lệ, đúng phiên hiện hành, user còn 
 ### Cơ chế
 
 Chống-reuse **hoàn toàn dựa vào việc so khớp `jti`** giữa RT gửi lên và
-`session.refreshJtiCurrent`:
+`session.currentRefreshJti`:
 
 - RT nào có `jti` **khớp** field này → đang là bản hợp lệ hiện hành → cho refresh, rồi ghi đè
   field bằng `jti` của RT mới (bước 3 ở §4).
@@ -156,7 +168,7 @@ session. Tính năng "phát hiện lộ token ⇒ hủy cả family" coi như v�
 viết ra.
 
 **Hướng B** (đang áp dụng): refresh **không chủ động blacklist RT vừa bị thay thế**. RT cũ vẫn
-"chết" — nhưng chết vì lý do khác: `jti` của nó không còn khớp `refreshJtiCurrent`. Nếu ai đó
+"chết" — nhưng chết vì lý do khác: `jti` của nó không còn khớp `currentRefreshJti`. Nếu ai đó
 (kẻ tấn công hoặc chính client do bug) gửi lại RT cũ, request sẽ **đi thẳng qua được bước 3**
 (chưa bị blacklist) và **dừng đúng ở bước 7** — nơi nhánh reuse-detection thực sự được kích hoạt:
 session bị `REVOKED`, RT đó **mới** bị blacklist tại đây, trả `3013`.
@@ -169,7 +181,7 @@ Hướng B (đang dùng):
   bước 3: nằm trong blacklist? → KHÔNG → đi tiếp
         │
         ▼
-  bước 7: jti khớp refreshJtiCurrent? → KHÔNG khớp
+  bước 7: jti khớp currentRefreshJti? → KHÔNG khớp
         │
         ▼
   session.status = REVOKED, blacklist jti này, throw 3013 TOKEN_REUSE_DETECTED
@@ -194,12 +206,14 @@ check đứng trước reuse check) chỉ an toàn khi **refresh không tự ý 
     "id": 123,
     "username": "alice01",
     "roles": [ ... ],
-    "accessToken": "eyJhbGci..."   // access token MỚI
+    "accessToken": "eyJhbGci...",   // access token MỚI
+    "refreshToken": "eyJhbGci...",  // MỚI: có giá trị với mobile (body), null với web (chỉ cookie)
+    "hasPassword": true              // MỚI: user đã có mật khẩu cũ chưa
   }
 }
 ```
 
-refreshToken mới nằm trong header `Set-Cookie`, không có trong body — giống hệt quy ước ở Login.
+> **Dual-mode:** web nhận RT mới qua `Set-Cookie`; mobile nhận `data.refreshToken` trong body — giống quy ước ở Login.
 
 **Lỗi:** đi qua `GlobalExceptionHandler`, trả `ErrorResponse` chuẩn:
 
@@ -217,8 +231,8 @@ refreshToken mới nằm trong header `Set-Cookie`, không có trong body — gi
 |:--:|---|:--:|---|:--:|
 | 3009 | UNAUTHORIZED | 401 | thiếu cookie / parse claim lỗi / `isTokenValid` sai | ✓ |
 | 2010 | TOKEN_REVOKED | 401 | `jti` nằm trong `blacklist:refresh:*` (thường do đã logout) | ✗ (xem §8) |
-| 3012 | SESSION_INACTIVE | 401 | session không tồn tại / không `ACTIVE` / thiếu `refreshJtiCurrent` | ✓ |
-| 3013 | TOKEN_REUSE_DETECTED | 401 | `jti` không khớp `refreshJtiCurrent` — replay RT cũ ⭐ | ✓ |
+| 3012 | SESSION_INACTIVE | 401 | session không tồn tại / không `ACTIVE` / thiếu `currentRefreshJti` | ✓ |
+| 3013 | TOKEN_REUSE_DETECTED | 401 | `jti` không khớp `currentRefreshJti` — replay RT cũ ⭐ | ✓ |
 | 2001 | USER_NOT_FOUND | 404 | user biến mất khỏi DB giữa chừng | ✗ (xem §8) |
 | 2007 | ACCOUNT_BANNED | 403 | `user.isDeleted()=true` | ✓ |
 | 2005 | USER_INACTIVE | 403 | `user.isActive()=false` | ✓ |
@@ -241,7 +255,7 @@ refreshToken mới nằm trong header `Set-Cookie`, không có trong body — gi
   trong khối có gọi `clearRefreshTokenCookie`). Trường hợp này hiếm gặp trong thực tế (user bị
   xóa cứng khỏi DB khi vẫn còn RT sống).
 - **Rotation không tạo `sessionId` mới** — chỉ tạo `jti` mới cho AT/RT và cập nhật
-  `refreshJtiCurrent`. `session:{sessionId}` là **cùng một bản ghi Redis** xuyên suốt vòng đời
+  `currentRefreshJti`. `session:{sessionId}` là **cùng một bản ghi Redis** xuyên suốt vòng đời
   7 ngày, TTL của nó **không được gia hạn** dù refresh liên tục (xem doc 3 §6) — refresh token
   mới có `exp` = +7 ngày kể từ lúc refresh, nhưng session vẫn chết đúng 7 ngày kể từ **login
   gốc**. Nghĩa là refresh gần cuối chu kỳ vẫn có thể cấp một RT có `exp` "hứa hẹn" dài hơn thời
@@ -254,7 +268,7 @@ refreshToken mới nằm trong header `Set-Cookie`, không có trong body — gi
   vẫn dùng được cho tới khi tự hết hạn, hoặc tới khi logout, hoặc tới khi session chết vì lý do
   khác. Đây là quyết định kiến trúc đã ghi nhận (không phải bug) — muốn AT cũ chết ngay khi
   refresh thì endpoint cần nhận thêm AT cũ trong request để blacklist, hiện chưa làm.
-- **`refreshJtiCurrent` là "con dấu" duy nhất xác định bản RT hiện hành** — không dựa vào việc RT
+- **`currentRefreshJti` là "con dấu" duy nhất xác định bản RT hiện hành** — không dựa vào việc RT
   có nằm trong blacklist hay không để quyết định "còn hiệu lực". Hai khái niệm "bị thu hồi"
   (blacklist) và "không còn là bản hiện hành" (reuse) là **độc lập**, cố tình không gộp làm một
   (xem §5).
