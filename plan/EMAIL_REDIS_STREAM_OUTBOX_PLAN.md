@@ -821,22 +821,28 @@ Nguyên tắc xuyên suốt: listener **không bao giờ ném exception lên req
 @RequiredArgsConstructor
 public class OutboxPollingScheduler {
 
+    private final OutboxStreamProperties outboxStreamProperties;
     private final OutboxService outboxService;
-    private final EventStreamProducer streamProducer;
-    private final OutboxStreamProperties props;
+    private final EventStreamProducer eventStreamProducer;
 
     @Scheduled(fixedDelayString = "${app.outbox.poll-interval-ms:10000}")  // fixedDelay: đợt xong mới tính 10s kế, không chồng đợt
-    public void poll() {
-        outboxService.requeueStaleQueued(props.staleQueuedMinutes());        // ① janitor: cứu những row kẹt ở QUEUED
+    public void pollOutbox() {
+        outboxService.requeueStaleQueued(outboxStreamProperties.staleQueuedMinutes());  // ① janitor: cứu những row kẹt ở QUEUED
 
-        List<Outbox> batch = outboxService.lockPendingBatch(props.batchSize()); // ② lấy ~100 row về bộ nhớ — khoá DB đã buông ngay lúc SELECT xong
-        for (Outbox o : batch) {                                                // ③ vòng for NGOÀI DB transaction
-            try {                                                               //    → không giữ connection DB trong lúc gọi Redis
-                if (streamProducer.push(o)) {
-                    outboxService.markQueued(o.getId());
+        List<Outbox> batch = outboxService.lockPendingBatch(outboxStreamProperties.batchSize()); // ② lấy ~100 row về bộ nhớ — khoá DB đã buông ngay lúc SELECT xong
+        if (!batch.isEmpty()) {
+            log.info("[POLLING] Fetched {} PENDING outbox(es) to push", batch.size());
+        }
+
+        for (Outbox outbox : batch) {                                              // ③ vòng for NGOÀI DB transaction
+            try {                                                                 //    → không giữ connection DB trong lúc gọi Redis
+                if (eventStreamProducer.push(outbox)) {
+                    outboxService.markQueued(outbox.getId());
+                    log.info("[POLLING] Pushed outbox={} eventType={} → QUEUED", outbox.getId(), outbox.getEventType());
                 }
             } catch (Exception ex) {
-                outboxService.registerPushFailure(o.getId(), ex.getMessage());  // ④ ghi nhận hỏng + hẹn giờ thử lại xa dần; hết lượt thì FAILED
+                outboxService.registerPushFailure(outbox.getId(), ex.getMessage());  // ④ ghi nhận hỏng + hẹn giờ thử lại xa dần; hết lượt thì FAILED
+                log.warn("[POLLING] Push FAILED outbox={}: {}", outbox.getId(), ex.getMessage());
             }
         }
     }
@@ -1002,7 +1008,7 @@ public class OutboxStreamConfig {
 // org.springframework.data.redis.connection.stream.MapRecord,
 // org.springframework.data.redis.core.StringRedisTemplate,
 // org.springframework.data.redis.stream.StreamListener, org.springframework.stereotype.Component,
-// + OutboxRepository/OutboxService/EventHandlerRegistry/OutboxStatus
+// + OutboxRepository/OutboxService/EventHandlerRegistry/OutboxStreamProperties/OutboxStatus
 /**
  * Consumer chính: nhận message từ Redis Stream (container ở OutboxStreamConfig giao từng
  * message tới đây), gọi handler theo eventType, rồi TỰ quyết lúc ACK (manual ack).
@@ -1019,44 +1025,65 @@ public class OutboxStreamConfig {
 public class EventStreamConsumer implements StreamListener<String, MapRecord<String, String, String>> {
 
     private final OutboxRepository outboxRepository;
+    private final StringRedisTemplate stringRedisTemplate;
+    private final OutboxStreamProperties outboxStreamProperties;
+    private final EventHandlerRegistry eventHandlerRegistry;
     private final OutboxService outboxService;
-    private final EventHandlerRegistry handlerRegistry;
-    private final StringRedisTemplate redis;
-    private final OutboxStreamProperties props;
 
+    /**
+     * StreamMessageListenerContainer gọi method này mỗi khi có message mới.
+     * Với 8 consumer (mục 5.6) method này được gọi SONG SONG từ nhiều thread —
+     * instance @Component này được dùng chung, nên phải thread-safe:
+     * - Không giữ state mutable (chỉ inject dependencies)
+     * - Mỗi message xử lý độc lập, không chia sẻ biến giữa các lần gọi
+     *
+     * @param mapRecord Message từ Redis Stream, chứa các field:
+     *                  outboxId, eventType, payload, aggregateType, aggregateId
+     */
     @Override
-    public void onMessage(MapRecord<String, String, String> record) {
-    long outboxId = Long.parseLong(record.getValue().get("outboxId"));
-    var opt = outboxRepository.findById(outboxId);
+    public void onMessage(MapRecord<String, String, String> mapRecord) {
+        long outboxId = Long.parseLong(mapRecord.getValue().get("outboxId"));
+        var opt = outboxRepository.findById(outboxId);
 
-    // ── CHỐNG TRÙNG (nhận trùng message cũng không sao) ────────────────────
-    // Cùng 1 sự kiện có thể nằm trong stream 2 lần (listener + polling cùng đẩy).
-    // Bản sau tới lượt sẽ thấy row đã SENT → chỉ việc ACK nhặt xác, KHÔNG gửi mail nữa.
-    // Logic này chỉ đúng nhờ quy tắc: SENT do CONSUMER đặt SAU KHI gửi OK (bug #1 của v1).
-    if (opt.isEmpty() || opt.get().getStatus() == OutboxStatus.SENT) {
-        acknowledge(record);
-        return;
+        /**
+         * Chống trùng (nhận trùng message cũng không sao)
+         * - Cùng 1 event có thể nằm trong stream 2 lần (listener + polling cùng đẩy)
+         * - Bản sau tới lượt sẽ thấy row đã SENT -> chỉ cần ACK, không gửi mail nữa
+         * - Logic này chỉ đúng nhờ quy tắc: SENT do CONSUMER đặt SAU KHI gửi OK
+         */
+        if (opt.isEmpty() || opt.get().getStatus() == OutboxStatus.SENT) {
+            log.debug("[OUTBOX] Skip outbox={} (not found or already SENT) → ACK", outboxId);
+            acknowledge(mapRecord);
+            return;
+        }
+
+        try {
+            // dispatch theo eventType -> EmailHandler/WebhookHandler
+            String eventType = mapRecord.getValue().get("eventType");
+            log.info("[OUTBOX] Processing outbox={} eventType={}", outboxId, eventType);
+
+            eventHandlerRegistry.getByEventType(eventType)
+                            .handle(mapRecord.getValue().get("payload"));
+
+            // Cập nhật status của event thành SENT nếu xử lí thành công
+            outboxService.markSent(outboxId);
+            // Sau đó ACK Redis cho event này
+            acknowledge(mapRecord);
+            log.info("[OUTBOX] SUCCESS outbox={} eventType={} → SENT + ACK", outboxId, eventType);
+        } catch (Exception e) {
+            // Không ACK — message nằm lại PEL chờ reclaimer claim (min-idle reclaimIdleMs)
+            log.error("Handle fail out={} - chờ XAUTOCLAIM", outboxId, e);
+            outboxService.noteProcessingError(outboxId, e.getMessage());
+            // Lưu ý: không rethrow exception ở đây.
+            // Rethrow sẽ làm container log lỗi lặp và nếu PendingReclaimer gọi onMessage()
+            // trực tiếp, exception sẽ thoát khỏi vòng lặp reclaim(), khiến các entry còn lại bị bỏ sót.
+        }
     }
 
-    try {
-        // dispatch theo eventType → EmailHandler/WebhookHandler...
-        handlerRegistry.getByEventType(record.getValue().get("eventType"))
-                       .handle(record.getValue().get("payload"));
-
-        outboxService.markSent(outboxId);      // DB báo "đã xử lý"
-        acknowledge(record);                   // rồi mới ACK Redis — THỨ TỰ này quan trọng:
-                                               // crash giữa 2 dòng trên → redelivery thấy SENT → chỉ ack, không gửi lại
-    } catch (Exception ex) {
-        log.error("Handle fail outbox={} — chờ XAUTOCLAIM", outboxId, ex);
-        outboxService.noteProcessingError(outboxId, ex.getMessage()); // chỉ ghi last_error
-        // KHÔNG ack → message nằm lại PEL, PendingReclaimer (5.9) sẽ lo
+    private void acknowledge(MapRecord<String, String, String> mapRecord) {
+        stringRedisTemplate.opsForStream().acknowledge(outboxStreamProperties.streamKey(),
+                outboxStreamProperties.consumerGroup(), mapRecord.getId());
     }
-}
-
-private void acknowledge(MapRecord<String, String, String> record) {
-    redis.opsForStream().acknowledge(                 // redis = StringRedisTemplate đã inject
-            props.streamKey(), props.consumerGroup(), record.getId());
-}
 }
 ```
 
@@ -1247,40 +1274,71 @@ public class EventHandlerRegistry {
 ```
 
 ```java
-// features/email/handler/EmailHandler.java
+// common/outbox/handler/EmailHandler.java
 @Component
 @RequiredArgsConstructor
 @Slf4j
 public class EmailHandler implements EventHandler {
 
-    private final EmailService emailService;
-    private final ObjectMapper objectMapper;
-
+    /**
+     * Các loại event mà handler này hỗ trợ.
+     * Đăng ký vào EventHandlerRegistry để consumer biết route.
+     */
     private static final Set<String> TYPES = Set.of(
-            "EMAIL_OTP", "EMAIL_WELCOME",
-            "EMAIL_APPLICATION_ACCEPTED", "EMAIL_APPLICATION_REJECTED", "EMAIL_GENERIC");
+            "EMAIL_OTP",
+            "EMAIL_WELCOME",
+            "EMAIL_APPLICATION_ACCEPTED",
+            "EMAIL_APPLICATION_REJECTED",
+            "EMAIL_GENERIC"
+    );
 
-    @Override public Set<String> supportedTypes() { return TYPES; }
+    private final ObjectMapper objectMapper;
+    private final EmailService emailService;
+
+    @Override
+    public Set<String> supportedTypes() {
+        return TYPES;
+    }
 
     @Override
     public void handle(String payloadJson) throws Exception {
-        var root = objectMapper.readTree(payloadJson);   // payload JSON nguyên xi từ DB
-        String to   = root.path("to").asText();
-        var vars    = root.path("variables");
+        // Parse payload
+        var root = objectMapper.readTree(payloadJson);
+        String to = root.path("to").asText();
+        String templateName = root.path("templateName").asText();
+        var variables = root.path("variables");
+        log.info("[EMAIL] Sending to={} template={}", to, templateName);
 
-        switch (root.path("templateName").asText()) {   // dispatch theo template — thêm mail mới chỉ thêm case
-            case "email/otp" -> emailService.sendOtpEmail(to,
-                    vars.path("username").asText(), vars.path("otp").asText());
-            case "email/welcome" -> emailService.sendWelcomeEmail(to,
-                    vars.path("username").asText());
-            case "email/application-accepted" -> emailService.sendApplicationAcceptedEmail(to,
-                    vars.path("fullName").asText(), vars.path("jobTitle").asText(),
-                    vars.path("companyName").asText());
-            case "email/application-rejected" -> emailService.sendApplicationRejectedEmail(to,
-                    vars.path("fullName").asText(), vars.path("jobTitle").asText(),
-                    vars.path("companyName").asText(), vars.path("rejectedReason").asText());
-            default -> emailService.sendHtmlEmail(to,          // EMAIL_GENERIC — tuỳ biến hoàn toàn qua payload
-                    root.path("subject").asText(), root.path("htmlContent").asText());
+        // Dispatch theo templateName
+        switch (templateName) {
+            case "email/otp":
+                emailService.sendOtpEmail(to,
+                        variables.path("username").asText(),
+                        variables.path("otp").asText());
+                break;
+            case "email/welcome":
+                emailService.sendWelcomeEmail(to,
+                        variables.path("username").asText());
+                break;
+            case "email/application-accepted":
+                emailService.sendApplicationAcceptedEmail(to,
+                        variables.path("fullName").asText(),
+                        variables.path("jobTitle").asText(),
+                        variables.path("companyName").asText());
+                break;
+            case "email/application-rejected":
+                emailService.sendApplicationRejectedEmail(to,
+                        variables.path("fullName").asText(),
+                        variables.path("jobTitle").asText(),
+                        variables.path("companyName").asText(),
+                        variables.path("rejectedReason").asText());
+                break;
+            default:
+                // EMAIL_GENERIC — tuỳ biến hoàn toàn qua payload
+                emailService.sendHtmlEmail(to,
+                        root.path("subject").asText(),
+                        root.path("htmlContent").asText());
+                break;
         }
     }
 }
