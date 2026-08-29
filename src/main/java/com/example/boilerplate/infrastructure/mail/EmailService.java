@@ -32,7 +32,6 @@ public class EmailService {
         }
     }
 
-    @Async("emailTaskExecutor")
     public void sendOtpEmail(String to, String username, String otp) {
         Context context = new Context();
         context.setVariable("username", username);
@@ -43,7 +42,6 @@ public class EmailService {
         sendHtmlEmail(to, "Your OTP Code", content);
     }
 
-    @Async("emailTaskExecutor")
     public void sendWelcomeEmail(String to, String username) {
         Context context = new Context();
         context.setVariable("username", username);
@@ -55,16 +53,12 @@ public class EmailService {
 
     /**
      * Gửi email thông báo hồ sơ ĐƯỢC DUYỆT (ACCEPTED) cho ứng viên.
-     * 
-     * Chạy async trên virtual thread (emailTaskExecutor) — không chặn API trả response.
-     * Email fail không ảnh hưởng đến việc đổi status (thread riêng, không trong transaction).
      *
      * @param to          Email ứng viên (luôn có — không phụ thuộc isPublic)
      * @param fullName    Tên ứng viên
      * @param jobTitle    Tên job đã ứng tuyển
      * @param companyName Tên công ty nhà tuyển dụng
      */
-    @Async("emailTaskExecutor")
     public void sendApplicationAcceptedEmail(String to, String fullName,
                                              String jobTitle, String companyName) {
         Context context = new Context();
@@ -78,9 +72,6 @@ public class EmailService {
 
     /**
      * Gửi email thông báo hồ sơ BỊ TỪ CHỐI (REJECTED) cho ứng viên, kèm lý do từ chối.
-     * 
-     * Chạy async trên virtual thread (emailTaskExecutor) — không chặn API trả response.
-     * Email fail không ảnh hưởng đến việc đổi status (thread riêng, không trong transaction).
      *
      * @param to             Email ứng viên (luôn có — không phụ thuộc isPublic)
      * @param fullName       Tên ứng viên
@@ -88,7 +79,6 @@ public class EmailService {
      * @param companyName    Tên công ty nhà tuyển dụng
      * @param rejectedReason Lý do từ chối (đã validate bắt buộc ở service)
      */
-    @Async("emailTaskExecutor")
     public void sendApplicationRejectedEmail(String to, String fullName,
                                              String jobTitle, String companyName,
                                              String rejectedReason) {

@@ -61,6 +61,9 @@ spring:
           auth: true
           starttls:
             enable: true
+          connectiontimeout: 5000
+          timeout: 10000
+          writetimeout: 10000
     default-encoding: UTF-8
 
   data:
@@ -71,7 +74,7 @@ spring:
       port: ${REDIS_PORT}
       password: ${REDIS_PASSWORD}
       database: ${REDIS_DATABASE}
-      timeout: 1000ms
+      timeout: 5000ms
       connect-timeout: 2000ms
       lettuce:
         shutdown-timeout: 100ms
@@ -109,6 +112,11 @@ spring:
           model: openai/gpt-oss-120b
           temperature: 0.1
 
+  task:
+    scheduling:
+      pool:
+        size: 4
+
 jwt:
   secret: ${JWT_SECRET}
   access-token-expiration-ms: ${ACCESS_TOKEN_LIFETIME}
@@ -129,6 +137,18 @@ app:
   seed-jobs:
     enabled: ${SEED_JOBS_ENABLED:true}   # true = chạy seeder khi start app
     per-company: ${SEED_JOBS_PER_COMPANY:45}  # số job seed cho mỗi công ty chưa có job
+
+  outbox:
+    stream-key: ${OUTBOX_STREAM_KEY:findjob:event-queue}
+    dlq-stream-key: ${OUTBOX_DLQ_KEY:findjob:event-dlq}
+    consumer-group: ${OUTBOX_GROUP:findjob-workers}
+    poll-interval-ms: ${OUTBOX_POLL_MS:10000}
+    batch-size: ${OUTBOX_BATCH:100}
+    maxlen: ${OUTBOX_MAXLEN:50000}
+    stale-queued-minutes: ${OUTBOX_STALE_QUEUED_MIN:15}
+    reclaim-interval-ms: ${OUTBOX_RECLAIM_MS:30000}
+    reclaim-idle-ms: ${OUTBOX_RECLAIM_IDLE_MS:60000}
+    poll-timeout-ms: ${OUTBOX_POLL_TIMEOUT_MS:2000}   # BLOCK của XREADGROUP trong container
 
 cloudinary:
   cloud-name: ${CLOUDINARY_CLOUD_NAME}
