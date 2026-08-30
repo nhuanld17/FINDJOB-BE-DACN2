@@ -17,11 +17,12 @@ import java.time.Instant;
  * rollback thì cả hai cùng biến mất. Nhờ vậy không bao giờ có trường hợp
  * "tạo user xong mà quên gửi mail".
  *
- * 4 trạng thái của row:
- * PENDING — mới ghi, chưa đưa vào Redis
- * QUEUED  — đã nằm trong Redis, chờ consumer gửi
- * SENT    — mail đã gửi thành công
- * FAILED  — thử quá nhiều lần vẫn hỏng, bỏ cuộc
+ * 5 trạng thái của row:
+ * PENDING    — mới ghi, chưa đưa vào Redis
+ * QUEUED     — đã nằm trong Redis, chờ consumer gửi
+ * PROCESSING — consumer đang giành quyền gửi mail (atomic claim)
+ * SENT       — mail đã gửi thành công
+ * FAILED     — thử quá nhiều lần vẫn hỏng, bỏ cuộc
  */
 @Entity
 @Table(name = "outbox")
@@ -59,7 +60,7 @@ public class Outbox {
     @Column(columnDefinition = "jsonb", nullable = false)
     private String payload;
 
-    /** Trạng thái hiện tại của row — xem 4 giá trị ở đầu class. */
+    /** Trạng thái hiện tại của row — xem 5 giá trị ở đầu class. */
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private OutboxStatus status;

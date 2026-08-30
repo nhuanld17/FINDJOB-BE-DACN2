@@ -104,16 +104,34 @@ public interface OutboxRepository extends JpaRepository<Outbox, Long> {
     int registerPushFailure(@Param("id") Long id, @Param("error") String error);
 
     /**
-     * QUEUED → SENT — CHỈ consumer được gọi, sau khi mail gửi THẬT SỰ thành công
-     * (không phải sau khi đẩy vào Redis).
+     * Claim quyền gửi mail — ATOMIC, chống trùng.
+     * Chỉ 1 luồng (trong 8 worker + reclaimer) giành được:
+     *   affected = 1 → giành được → gửi mail
+     *   affected = 0 → thua (luồng khác đang gửi) → bỏ qua
+     */
+    @Modifying
+    @Query("UPDATE Outbox o SET o.status = 'PROCESSING'"
+            + " WHERE o.id = :id AND o.status IN ('PENDING', 'QUEUED')")
+    int claimProcessing(@Param("id") Long id);
+
+    /**
+     * PROCESSING → SENT — CHỈ consumer được gọi, sau khi mail gửi THẬT SỰ thành công.
      *
-     * WHERE status <> 'SENT': row đã SENT rồi thì câu lệnh không đổi gì
-     * → gọi nhầm 2 lần cũng vô hại.
+     * WHERE status = 'PROCESSING': chỉ luồng đã claim mới được đặt SENT.
      */
     @Modifying
     @Query("UPDATE Outbox o SET o.status = 'SENT', o.lastError = NULL"
-            + " WHERE o.id = :id AND o.status <> 'SENT'")
+            + " WHERE o.id = :id AND o.status = 'PROCESSING'")
     int markSent(@Param("id") Long id);
+
+    /**
+     * Gửi mail thất bại → revert PROCESSING → PENDING để retry.
+     * Chỉ revert nếu vẫn còn PROCESSING (chưa bị luồng khác đụng).
+     */
+    @Modifying
+    @Query("UPDATE Outbox o SET o.status = 'PENDING'"
+            + " WHERE o.id = :id AND o.status = 'PROCESSING'")
+    int revertToPending(@Param("id") Long id);
 
     /**
      * Chỉ ghi lỗi gửi mail gần nhất vào last_error — vd "SMTP timeout".

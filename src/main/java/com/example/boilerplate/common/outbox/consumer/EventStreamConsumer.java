@@ -48,16 +48,15 @@ public class EventStreamConsumer implements StreamListener<String, MapRecord<Str
     @Override
     public void onMessage(MapRecord<String, String, String> mapRecord) {
         long outboxId = Long.parseLong(mapRecord.getValue().get("outboxId"));
-        var opt = outboxRepository.findById(outboxId);
 
         /**
-         * Chống trùng (nhận trùng message cũng không sao)
-         * - Cùng 1 event có thể nằm trong stream 2 lần (listener + polling cùng đẩy)/
-         * - Bản sau tới lượt sẽ thấy row đã SENT -> chỉ cần ACK, không gửi mail nữa
-         * - Logic này chỉ đúng nhờ quy tắc: SENT do CONSUMER đặt SAU KHI gửi OK
+         * Giành quyền gửi mail — ATOMIC, chống trùng.
+         * PENDING/QUEUED → PROCESSING. Chỉ 1 luồng giành được:
+         *   affected = 1 → giành được → gửi mail
+         *   affected = 0 → thua (luồng khác đang gửi, hoặc đã SENT) → bỏ qua, chỉ ACK
          */
-        if (opt.isEmpty() || opt.get().getStatus() == OutboxStatus.SENT) {
-            log.debug("[OUTBOX] Skip outbox={} (not found or already SENT) → ACK", outboxId);
+        if (!outboxService.claimProcessing(outboxId)) {
+            log.debug("[OUTBOX] Skip outbox={} (already processing or SENT) → ACK", outboxId);
             acknowledge(mapRecord);
             return;
         }
@@ -76,8 +75,10 @@ public class EventStreamConsumer implements StreamListener<String, MapRecord<Str
             acknowledge(mapRecord);
             log.info("[OUTBOX] SUCCESS outbox={} eventType={} → SENT + ACK", outboxId, eventType);
         } catch (Exception e) {
-            // Không ACK — message nằm lại PEL chờ reclaimer claim (min-idle reclaimIdleMs)
-            log.error("Handle fail out={} - chờ XAUTOCLAIM", outboxId, e);
+            // Gửi mail thất bại → revert PROCESSING về PENDING để reclaimer retry.
+            // Không ACK — message nằm lại PEL chờ reclaimer claim (min-idle reclaimIdleMs).
+            log.error("Handle fail out={} - revert to PENDING, chờ reclaimer", outboxId, e);
+            outboxService.revertToPending(outboxId);
             outboxService.noteProcessingError(outboxId, e.getMessage());
             // Lưu ý: không rethrow exception ở đây.
             // Rethrow sẽ làm container log lỗi lặp và nếu PendingReclaimer gọi onMessage()

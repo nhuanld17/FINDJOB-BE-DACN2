@@ -78,19 +78,42 @@ public class OutboxService {
     }
 
     /**
-     * QUEUED → SENT. CHỈ consumer được gọi — sau khi mail gửi THẬT thành công.
+     * Claim quyền gửi mail — ATOMIC, chống trùng.
+     * PENDING/QUEUED → PROCESSING. Chỉ 1 luồng (trong 8 worker + reclaimer) giành được:
+     *   affected = 1 → giành được → gửi mail
+     *   affected = 0 → thua (luồng khác đang gửi) → bỏ qua
+     *
+     * @Transactional riêng: consumer gọi từ thread riêng, cần TX cho @Modifying.
+     */
+    @Transactional
+    public boolean claimProcessing(Long id) {
+        return outboxRepository.claimProcessing(id) > 0;
+    }
+
+    /**
+     * PROCESSING → SENT. CHỈ consumer được gọi — sau khi mail gửi THẬT thành công.
      *
      * Thứ tự bắt buộc: markSent() TRƯỚC, XACK Redis SAU.
      * Nếu app crash giữa 2 bước → Redis giao lại message → consumer thấy
      * row đã SENT → chỉ ACK, không gửi mail lần nữa. Đảo ngược thứ tự
      * (ACK trước) mà crash = mail mất trắng, không ai giao lại nữa.
      *
-     * @Transactional riêng: consumer gọi từ thread riêng (cTaskExecutor),
-     * không có transaction context sẵn — cần TX cho @Modifying UPDATE query.
+     * @Transactional riêng: consumer gọi từ thread riêng, cần TX cho @Modifying.
      */
     @Transactional
     public boolean markSent(Long id) {
         return outboxRepository.markSent(id) > 0;
+    }
+
+    /**
+     * Gửi mail thất bại → revert PROCESSING → PENDING để retry.
+     * Chỉ revert nếu vẫn còn PROCESSING (chưa bị luồng khác đụng).
+     *
+     * @Transactional riêng: consumer gọi từ thread riêng, cần TX cho @Modifying.
+     */
+    @Transactional
+    public void revertToPending(Long id) {
+        outboxRepository.revertToPending(id);
     }
 
     /**

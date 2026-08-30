@@ -14,6 +14,7 @@ import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.PendingMessage;
 import org.springframework.data.redis.connection.stream.PendingMessages;
 import org.springframework.data.redis.connection.stream.StreamRecords;
+import org.springframework.data.redis.RedisSystemException;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -60,7 +61,20 @@ public class PendingReclaimer {
 
         // Lấy tối đa 50 message đang trong PEL (không giới hạn khoảng ID).
         // Spring API không hỗ trợ lọc theo idle trực tiếp, nên phải lấy toàn bộ và lọc sau.
-        PendingMessages pendings = ops.pending(streamKey, consumerGroup, Range.unbounded(), 50);
+        PendingMessages pendings;
+        try {
+            pendings = ops.pending(streamKey, consumerGroup, Range.unbounded(), 50);
+        } catch (RedisSystemException ex) {
+            // NOGROUP: consumer group chưa được tạo (app vừa start, onAppReady chưa chạy).
+            // Đây là race lúc startup — bỏ qua, lần chạy sau (30s) group đã có.
+            if (ex.getCause() instanceof io.lettuce.core.RedisCommandExecutionException
+                    && ex.getCause().getMessage() != null
+                    && ex.getCause().getMessage().contains("NOGROUP")) {
+                log.debug("Consumer group chưa tồn tại, bỏ qua lượt reclaim này");
+                return;
+            }
+            throw ex;
+        }
 
         if (pendings == null) {
             return;
