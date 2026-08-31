@@ -987,13 +987,69 @@ xóa dummy entry, rồi start container.
 **Cấu hình container:**
 - `batchSize(1)`: map thẳng vào `COUNT 1` của `XREADGROUP` — mỗi consumer nhận 1 message/lần,
   8 consumers chia đều backlog, xử lý song song thật.
-- `executor(Executors.newFixedThreadPool(8))`: 8 threads cho 8 consumers. Dùng fixed pool
-  (không Virtual Thread) vì consumer gọi Java Mail (synchronized → Virtual Thread pinning).
+- `executor(ThreadPoolTaskExecutor)`: corePoolSize=8, maxPoolSize=8, queueCapacity=100,
+  CallerRunsPolicy. Dùng fixed pool (KHÔNG Virtual Thread) vì consumer gọi Java Mail
+  (dùng synchronized → Virtual Thread bị pinning, mất lợi ích). CallerRunsPolicy đảm bảo
+  nếu queue đầy (100 task) thì thread gọi sẽ chạy task thay vì reject — không mất message.
 - `pollTimeout(2s)`: `XREADGROUP BLOCK 2000` — idle thì ngủ, có tin dậy trong ≤2s.
+
+**Consumer registration — 8 workers song song:**
+- Container đăng ký 8 consumer trong cùng group, mỗi consumer có tên riêng:
+  `CONSUMER_NAME + "-w0"` .. `CONSUMER_NAME + "-w7"`.
+- Mỗi consumer có PEL riêng, Redis phân phối message round-robin giữa 8 consumer.
+- Cách này tăng throughput hơn dùng executor đơn vì container poll song song.
 
 **CONSUMER_NAME** — tên instance consumer duy nhất:
 - Được tạo từ `hostname + timestamp base36`, đảm bảo không trùng giữa các instance.
 - Dùng để đăng ký consumer trong group và để PendingReclaimer claim lại message.
+
+**Container bean — full code:**
+
+```java
+// common/outbox/config/OutboxStreamConfig.java
+@Bean(destroyMethod = "stop")
+StreamMessageListenerContainer<String, MapRecord<String, String, String>> container(
+    RedisConnectionFactory redisConnectionFactory,
+    EventStreamConsumer consumer
+) {
+    // Số lượng consumer song song — nên bằng số core hoặc 8 để tối ưu
+    int workers = 8;
+
+    // Executor pool: mỗi consumer chạy trên thread riêng → xử lý song song thật.
+    // Dùng fixed thread pool (KHÔNG Virtual Thread) vì consumer gọi Java Mail
+    // (dùng synchronized → Virtual Thread bị pinning, mất lợi ích).
+    ThreadPoolTaskExecutor containerExecutor = new ThreadPoolTaskExecutor();
+    containerExecutor.setCorePoolSize(workers);
+    containerExecutor.setMaxPoolSize(workers);
+    containerExecutor.setQueueCapacity(100); // hàng đợi giới hạn kích thước tối đa 100
+    containerExecutor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+    containerExecutor.initialize();
+
+    var options = StreamMessageListenerContainer.StreamMessageListenerContainerOptions.builder()
+            .pollTimeout(Duration.ofMillis(properties.pollTimeoutMs()))
+            .batchSize(1)                    // COUNT=1 cho XREADGROUP → mỗi consumer nhận 1 message/lần
+            .executor(containerExecutor)      // 8 threads cho 8 consumers → song song thật
+            .errorHandler(t -> log.error("Stream poll error", t))
+            .build();
+
+    var container = StreamMessageListenerContainer.create(redisConnectionFactory, options);
+
+    // Đăng ký nhiều consumer với tên khác nhau trong cùng group.
+    // Mỗi consumer có PEL riêng, Redis chia message cho các consumer.
+    // Cách này tăng throughput hơn dùng executor vì container poll song song.
+    for (int i = 0; i < workers; i++) {
+        String workerName = CONSUMER_NAME + "-w" + i;
+        container.receive(
+                Consumer.from(properties.consumerGroup(), workerName),
+                StreamOffset.create(properties.streamKey(), ReadOffset.lastConsumed()),
+                consumer
+        );
+    }
+
+    // KHÔNG start() ở đây — chờ onAppReady() tạo group xong mới start
+    return container;
+}
+```
 
 **Startup sequence (`onAppReady()`):**
 
@@ -1049,9 +1105,7 @@ public void onAppReady() {
 >   group chưa có.
 > - **Dummy entry phải được xóa:** nếu để lại, consumer nhận entry `_=_`, `outboxId` = null →
 >   `Long.parseLong(null)` crash `NumberFormatException`. Lưu `RecordId` từ XADD để XDEL
->   đúng entry.
-
-### 5.7 Consumer — `EventStreamConsumer`
+>   đúng entry.### 5.7 Consumer — `EventStreamConsumer`
 
 ```java
 // common/outbox/consumer/EventStreamConsumer.java
@@ -1071,6 +1125,8 @@ public void onAppReady() {
 @Component
 @RequiredArgsConstructor
 public class EventStreamConsumer implements StreamListener<String, MapRecord<String, String, String>> {
+
+
 
     private final OutboxRepository outboxRepository;
     private final StringRedisTemplate stringRedisTemplate;

@@ -21,6 +21,7 @@ import org.springframework.data.redis.connection.stream.StreamOffset;
 import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.stream.StreamMessageListenerContainer;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 
 import java.net.InetAddress;
@@ -28,6 +29,7 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadPoolExecutor;
 
 /**
  * Cấu hình phía CONSUME: tạo consumer group và container lắng nghe stream.
@@ -87,7 +89,12 @@ public class OutboxStreamConfig {
         // Executor pool: mỗi consumer chạy trên thread riêng → xử lý song song thật.
         // Dùng fixed thread pool (KHÔNG Virtual Thread) vì consumer gọi Java Mail
         // (dùng synchronized → Virtual Thread bị pinning, mất lợi ích).
-        Executor containerExecutor = Executors.newFixedThreadPool(workers);
+        ThreadPoolTaskExecutor containerExecutor = new ThreadPoolTaskExecutor();
+        containerExecutor.setCorePoolSize(workers);
+        containerExecutor.setMaxPoolSize(workers);
+        containerExecutor.setQueueCapacity(100); // hàng đợi giới hạn kích thước tối đã 100
+        containerExecutor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        containerExecutor.initialize();
 
         var options = StreamMessageListenerContainer.StreamMessageListenerContainerOptions.builder()
                 .pollTimeout(Duration.ofMillis(properties.pollTimeoutMs()))
