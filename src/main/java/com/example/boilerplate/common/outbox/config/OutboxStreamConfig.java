@@ -93,6 +93,7 @@ public class OutboxStreamConfig {
         containerExecutor.setCorePoolSize(workers);
         containerExecutor.setMaxPoolSize(workers);
         containerExecutor.setQueueCapacity(100); // hàng đợi giới hạn kích thước tối đã 100
+        // Queue đầy → caller tự chạy task thay vì reject (không mất message)
         containerExecutor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
         containerExecutor.initialize();
 
