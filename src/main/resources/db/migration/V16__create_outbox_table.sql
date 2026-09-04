@@ -4,7 +4,7 @@ CREATE TABLE outbox (
     aggregate_type VARCHAR(50),
     aggregate_id  BIGINT,
     payload       JSONB NOT NULL,                 -- {to, templateName, variables{...}}
-    status        VARCHAR(20) NOT NULL DEFAULT 'PENDING', -- PENDING|QUEUED|SENT|FAILED
+    status        VARCHAR(20) NOT NULL DEFAULT 'PENDING', -- PENDING|QUEUED|PROCESSING|SENT|FAILED
     retry_count   INT NOT NULL DEFAULT 0,
     max_retries   INT NOT NULL DEFAULT 5,
     next_retry_at TIMESTAMPTZ,

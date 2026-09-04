@@ -70,7 +70,7 @@ flowchart TD
     E[Polling Scheduler<br/>SKIP LOCKED + backoff] -->|PENDING quá hạn next_retry_at| D
     E -->|set QUEUED| B
     D --> F[EventStreamConsumer<br/>manual ACK ×8 worker]
-    G[PendingReclaimer<br/>XAUTOCLAIM min-idle 60s] -->|claim lại message kẹt| D
+    G[PendingReclaimer<br/>XCLAIM min-idle 60s] -->|claim lại message kẹt| D
     G -->|deliveryCount >= max| H[[findjob:event-dlq]]
     F -->|OK: XACK + SENT| B
     F --> I[EventHandlerRegistry]
@@ -91,7 +91,7 @@ flowchart TD
    vào Stream. Đây là đường dự phòng — chậm hơn nhưng bù lại không bao giờ bỏ rơi sự kiện.
 6. **EventStreamConsumer** đọc message từ Stream theo cơ chế consumer group, gọi handler
    tương ứng theo `eventType`. Cùng 1 instance `@Component` được **8 consumer** (`-w0`..`-w7`)
-   dùng chung để xử lý song song — phải thread-safe.
+   dùng chung để xử lý đồng thời — phải thread-safe.
 7. Handler gửi mail thật (SMTP). OK → `XACK` + row thành `SENT`.
 8. **PendingReclaimer** mỗi 30 giây soi danh sách message "đã giao nhưng chưa ack" (pending
    entries): cái nào treo quá 60 giây thì nhận lại để xử lý; thử quá số lần → đẩy vào
@@ -169,8 +169,9 @@ CREATE INDEX idx_outbox_status_sent_created ON outbox (status, created_at);
 **📖 Giải thích schema — chia 4 nhóm cột:**
 
 - **Định danh & truy vết:** `id` (`BIGSERIAL` = số tự tăng, map sang `Long`), `event_type`
-  (quyết định handler nào xử lý — "loại thư"), `aggregate_type`/`aggregate_id` (sự kiện này
-  thuộc đối tượng nghiệp vụ nào, vd `USER` #42 — chỉ để debug/truy vết, logic không phụ thuộc).
+  (quyết định handler nào xử lý — "loại thư"), `aggregate_type` (kiểu đối tượng nghiệp vụ
+  — vd `USER`, `JOB`) + `aggregate_id` (ID của đối tượng — vd `42`). Hai cột này chỉ để
+  debug/truy vết, logic xử lý không phụ thuộc vào chúng.
 - **Hành lý:** `payload` (JSONB) gói mọi thứ handler cần (`to`, `templateName`, `variables`).
   Nguyên tắc *self-contained*: consumer KHÔNG quay lại bảng users/jobs để hỏi thêm — đề phòng
   dữ liệu gốc đã đổi làm payload stale.
@@ -220,7 +221,7 @@ Package `com.example.boilerplate.common.outbox.entity` — `@Entity Outbox` map 
 ```java
 // common/outbox/entity/Outbox.java
 /**
- * Mỗi row = 1 email cần gửi.
+ * 1 outbox = 1 event cần xử lí
  *
  * Row này được ghi CÙNG TRANSACTION với nghiệp vụ — ví dụ hàm register()
  * vừa lưu user vừa ghi row EMAIL_OTP. Commit thì cả hai cùng vào DB,
@@ -244,14 +245,24 @@ public class Outbox {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    /** Loại email — vd EMAIL_OTP, EMAIL_WELCOME. Consumer dựa vào đây chọn cách gửi. */
+    /**
+     * Loại event - EMAIL_OTP, EMAIL_WELCOME, consumer sẽ dựa vào đây để chọn cách
+     * xử lí
+     */
     @Column(name = "event_type", nullable = false, length = 100)
     private String eventType;
 
-    /** Sự kiện này thuộc về ai — vd USER #42. Chỉ để tra cứu khi debug. */
+    /**
+     * Loại đối tượng nghiệp vụ liên quan đến event này - VD: USER, JOB, APPLICATION
+     * Kết hợp với aggregateId để truy vết khi debug, KHÔNG dùng trong xử lí logic
+     */
     @Column(name = "aggregate_type", length = 50)
     private String aggregateType;
 
+    /**
+     * ID của đối tượng nghiệp vụ - VD: 42 (tức là USER 42)
+     * Chỉ để debug, ko dùng trong logic xử lí
+     */
     @Column(name = "aggregate_id")
     private Long aggregateId;
 
@@ -270,41 +281,47 @@ public class Outbox {
     @Column(columnDefinition = "jsonb", nullable = false)
     private String payload;
 
-    /** Trạng thái hiện tại của row — xem 5 giá trị ở đầu class. */
+    /**
+     * Trạng thái hiện tại của event
+     */
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private OutboxStatus status;
 
     /**
-     * Đếm số lần ĐƯA VÀO REDIS hỏng (Redis chết, mất kết nối...).
+     * Đếm số lần đẩy event vào redis stream lỗi (redis chết, mất kết nối)
      *
-     * Lưu ý: KHÔNG đếm lỗi gửi mail. Gửi mail hỏng là chuyện của Redis —
-     * Redis tự đếm số lần giao lại message (deliveryCount) và PendingReclaimer
-     * dựa vào số đó. Field này chỉ dành cho lỗi phía đẩy.
+     * Lưu ý: Không đếm lỗi xử lí event. Xử lí event lỗi là thuộc về redis -
+     * redis tự đếm số lần giao lại message (deliveryCount) trong PEL và
+     * PendingReclaimer dựa vào số đó:
+     * - deliveryCount < maxRetries -> còn lượt -> XCLAIM claim lại -> xử lí lại
+     * - deliveryCount >= maxRetries -> hết lượt -> chuyển qua DLQ + markFailed
+     *
+     * Field này chỉ dành cho lỗi ở phía đẩy.
      */
     @Column(name = "retry_count", nullable = false)
     @Builder.Default
     private int retryCount = 0;
 
     /**
-     * Số lần thử tối đa = 5. Thử hỏng đủ 5 lần thì bỏ cuộc (FAILED).
-     * Dùng cho cả 2 việc:
-     * - Đẩy vào Redis hỏng 5 lần → row FAILED
-     * - Gửi mail hỏng 5 lần (Redis giao lại 5 lần) → chuyển vào DLQ
+     * Số lần thử tối đa = 5. Thử hỏng đủ 5 lần thì bỏ cuộc (FAILED)
+     * Dùng cho 2 việc:
+     * - Đẩy message vào redis hỏng -> row FAILED
+     * - Gửi mail hỏng 5 lần (Redis giao lại 5 lần) -> chuyển vào DLQ
      */
     @Column(name = "max_retries", nullable = false)
     @Builder.Default
     private int maxRetries = 5;
 
     /**
-     * Hẹn giờ thử lại: đẩy hỏng thì không thử ngay mà hẹn xa dần
-     * (30 giây → 1 phút → 2 phút...). Chưa đến giờ thì polling bỏ qua row.
-     * NULL = được thử ngay lập tức.
+     * Hẹn giờ thử lại: đẩy hỏng thì không đẩy lại ngay mà hẹn xa dần
+     * (30 giây -> 1 phút -> 2 phút ...). Chưa đến giờ thì polling bỏ qua row.
+     * NULL -> được thử đẩy lại vào stream ngay lập tức
      */
     @Column(name = "next_retry_at")
     private Instant nextRetryAt;
 
-    /** Lỗi gần nhất — vd "Redis connection timeout". Để soi khi debug. */
+    /** Lỗi gần nhất - VD: "Redis Connection Timeout". Để debug */
     @Column(name = "last_error")
     private String lastError;
 
@@ -312,12 +329,6 @@ public class Outbox {
     @Column(name = "created_at", updatable = false)
     private Instant createdAt;
 
-    /**
-     * Hibernate tự cập nhật mỗi lần row đổi. Dùng để phát hiện row QUEUED
-     * "kẹt" — hơn 15 phút không nhúc nhích thì nghi bản trong Redis đã mất,
-     * đưa về PENDING đẩy lại - sẽ có khả năng gửi trùng event nên phải kiểm
-     * tra status của outbox event.
-     */
     @UpdateTimestamp
     @Column(name = "updated_at")
     private Instant updatedAt;
@@ -327,28 +338,35 @@ public class Outbox {
 ```java
 // common/outbox/entity/OutboxStatus.java
 /**
- * State machine của outbox event. Ràng buộc quyền chuyển trạng thái:
+ * Trạng thái của outbox event. Ràng buộc quyền chuyển trạng thái:
  *
- * PENDING : initial state. Do business service set lúc INSERT (trong TX nghiệp vụ).
- * QUEUED  : entry đã XADD thành công vào Redis Stream. Do listener (fast path)
- *           hoặc polling scheduler set, sau khi XADD trả về entry-id.
- * PROCESSING: consumer đã giành quyền gửi mail (atomic claim), đang trong lúc gửi.
- *           Khóa chống trùng: chỉ 1 luồng giành được.
- * SENT    : terminal state — handler đã thực thi thành công và đã XACK.
- *           CHỈ EventStreamConsumer được set. Đây là điều kiện cần cho
- *           idempotency check ở consumer (bản duplicate thấy SENT → skip + ACK).
- * FAILED  : terminal state — vượt max_retries ở push path (registerPushFailure)
- *           hoặc consume path (reclaimer → DLQ).
+ * PENDING  : initial state, do business service thiết lập lúc INSERT event vào db
+ * QUEUED   : entry đã được XADD thành công vào Redis Stream. Do listener hoặc polling
+ *            scheduler thiết lập, sau khi XADD trả về entry-id.
+ * PROCESSING: trạng thái khi consumer dành được quyền xử lí event, event đang trong giai đoạn
+ *             được xử lí.
+ * SENT      : terminal state - handler đã thực thi thành công và đã ACK. Chỉ EventStreamConsumer
+ *             mới được thiết lập trạng thái này. Đây là điều kiện cần cho idempotency check ở
+ *             consumer (khi xử lí event bị duplicate -> kiểm tra db đã thấy trạng thái
+ *             SENT -> bỏ qua và ACK).
+ * FAILED    : terminal state - vượt max_retries ở giai đoạn push (registerPushFailure) hoặc
+ *             consume path (reclaimer -> DLQ)
  *
- * Transition PROCESSING:
- *   PENDING → PROCESSING — claimProcessing(), atomic, chống trùng
- *   PROCESSING → SENT    — markSent(), sau khi gửi mail OK
- *   PROCESSING → PENDING — revertToPending(), khi gửi mail fail (để retry)
+ * Sơ đồ chuyển đổi:
+ * PENDING -> PROCESSING    - claimProcessing(), atomic, chống trùng
+ * PROCESSING -> SENT       - markSent(), sau khi gửi mail OK
+ * PROCESSING -> PENDING    - revertToPending(), khi gửi mail fail (để retry)
  *
- * Chú ý: không tồn tại transition QUEUED → PENDING từ consumer;
- * transition ngược PENDING ← QUEUED chỉ do janitor (requeueStaleQueued) thực hiện.
+ * Không tồn tại quá trình chuyển trạng thái từ QUEUED -> PENDING từ consumer;
+ * transition ngược QUEUED <- PENDING chỉ do janitor (requeueStaleQueued) thực hiện.
  */
-public enum OutboxStatus { PENDING, QUEUED, PROCESSING, SENT, FAILED }
+public enum OutboxStatus {
+    PENDING,
+    QUEUED,
+    PROCESSING,
+    SENT,
+    FAILED
+}
 ```
 
 ### 4.2 Repository — các query then chốt
@@ -357,40 +375,27 @@ Package `com.example.boilerplate.common.outbox.repository`.
 
 ```java
 // common/outbox/repository/OutboxRepository.java
-/**
- * Các mutation trạng thái outbox. Mỗi method là một transition của state machine,
- * đều guard bằng điều kiện WHERE trên status hiện tại để đảm bảo idempotent
- * khi có nhiều writer cạnh tranh (listener vs scheduler vs consumer).
- */
 @Repository
-public interface OutboxRepository extends JpaRepository<Outbox, Long> {
+public interface OutboxRepository extends JpaRepository<Outbox,Long> {
 
     /**
-     * Polling batch: SELECT các row PENDING để push vào stream.
-     *
-     * Điều kiện eligibility:
-     * - retry_count < max_retries : loại row đã exceed ngưỡng push-failure
-     * - next_retry_at IS NULL OR <= now() : chưa đến backoff deadline thì skip
-     *
-     * FOR UPDATE SKIP LOCKED: row-level lock, các transaction khác gặp row
-     * đang lock sẽ bỏ qua thay vì block → multi-instance poll không overlap batch
-     * và không serialize nhau. Lock tồn tại trong phạm vi TX của lời gọi này.
+     * Polling batch: SELECT các row PENDING để push vào stream
+     * Chỉ lấy các event có status PENDING, số lần retry chưa đạt ngưỡng
+     * và đã đến hạn retry
      */
     @Query(value = """
-        SELECT * FROM outbox
-        WHERE status = 'PENDING'
-          AND retry_count < max_retries
-          AND (next_retry_at IS NULL OR next_retry_at <= now())
-        ORDER BY created_at
-        LIMIT :limit
-        FOR UPDATE SKIP LOCKED
+    SELECT * FROM outbox
+    WHERE status = 'PENDING'
+        AND retry_count < max_retries
+        AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+    ORDER BY created_at
+    LIMIT :limit
+    FOR UPDATE SKIP LOCKED
     """, nativeQuery = true)
     List<Outbox> lockPendingBatch(@Param("limit") int limit);
 
     /**
-     * Transition PENDING → QUEUED. Guard status='PENDING': nếu row đã được
-     * chuyển bởi writer khác (race giữa fast path và polling), affected rows = 0
-     * → caller hiểu là không cần thao tác thêm. Idempotent.
+     * Đổi status từ PENDING -> QUEUED. Chỉ đổi khi status đang là PENDING
      */
     @Modifying
     @Query(value = """
@@ -400,43 +405,23 @@ public interface OutboxRepository extends JpaRepository<Outbox, Long> {
     int markQueued(@Param("id") Long id);
 
     /**
-     * Janitor: khôi phục row QUEUED stale về PENDING.
-     * Áp dụng cho các case mất entry phía Redis: FLUSHALL, MAXLEN trim cắt entry
-     * chưa consume, consumer group bị xóa. Điều kiện updated_at < now() - N minutes
-     * để tránh requeue row đang trong quá trình consume hợp lệ.
-     * Side effect: có thể push duplicate vào stream — chấp nhận trong at-least-once.
+     * Event QUEUED quá N phút chưa được xử lí -> khả năng message đã bị mất trong redis
+     * -> Đưa về PENDING để polling đẩy vào Stream lại.
      */
     @Modifying
     @Query(value = """
-        UPDATE outbox SET status = 'PENDING', next_retry_at = now()
-        WHERE status = 'QUEUED' AND updated_at < now() - (:minutes * interval '1 minute')
+        UPDATE outbox SET status = 'PENDING', next_retry_at = NOW()
+        WHERE status = 'QUEUED' and updated_at < NOW() - (:minutes * interval '1 minutes')
     """, nativeQuery = true)
-    int requeueStaleQueued(@Param("minutes") int minutes);
+    int requeueStaleQueued(@Param("minutes")int minutes);
 
     /**
-     * Ghi nhận 1 lần ĐẨY VÀO REDIS THẤT BẠI — polling scheduler gọi khi push lỗi.
+     * Push vào Redis thất bại → đếm 1 lần hỏng (retry_count + 1), lưu lỗi,
+     * hẹn giờ thử lại xa dần (30s → 1p → 2p → 4p...). Hỏng đủ max_retries
+     * lần (mặc định 5) → chuyển FAILED, thôi thử.
      *
-     * Một câu UPDATE làm 3 việc:
-     * 1. retry_count + 1
-     * 2. Lưu lỗi vào last_error (vd "Redis connection timeout")
-     * 3. Hẹn giờ thử lại — mỗi lần hỏng hẹn xa GẤP ĐÔI lần trước:
-     *
-     *      hỏng lần 1 → thử lại sau 30 giây
-     *      hỏng lần 2 → sau 1 phút
-     *      hỏng lần 3 → sau 2 phút
-     *      hỏng lần 4 → sau 4 phút
-     *      hỏng lần 5 → FAILED, thôi thử (mặc định max_retries = 5)
-     *
-     *    Hẹn xa dần để không đánh liên tục vào Redis đang chết — polling chạy
-     *    mỗi 10 giây, không hẹn giờ thì cứ 10s lại dội 1 lần.
-     *    (Trần tối đa 10 phút/lần — chỉ có tác dụng khi max_retries đặt > 5.)
-     *
-     * Lưu ý SQL: CASE so sánh "retry_count + 1" với max_retries, trong đó
-     * retry_count là giá trị CŨ (PostgreSQL đọc giá trị trước khi UPDATE),
-     * nên "+1" chính là số lần hỏng MỚI. Ví dụ: đang 4, max 5 → 4+1=5 ≥ 5 → FAILED.
-     *
-     * WHERE status = 'PENDING': row đã thành QUEUED (instance khác đẩy thành
-     * công rồi) thì câu lệnh không đụng vào — tránh đếm hỏng oan cho row đã xong.
+     * Chỉ đếm khi row còn PENDING: row đã QUEUED nghĩa là thằng khác đẩy
+     * thành công rồi — không tính hỏng oan.
      */
     @Modifying
     @Query(value = """
@@ -444,59 +429,60 @@ public interface OutboxRepository extends JpaRepository<Outbox, Long> {
         SET retry_count = retry_count + 1,
             last_error = :error,
             next_retry_at = CASE WHEN retry_count + 1 >= max_retries THEN NULL
-                                 ELSE now() + least(power(2, retry_count) * interval '30 seconds',
-                                                    interval '10 minutes') END,
+                            ELSE now() + least(power(2, retry_count) * interval '30 seconds',
+                                                interval '10 minutes') END,
             status = CASE WHEN retry_count + 1 >= max_retries THEN 'FAILED' ELSE status END
         WHERE id = :id AND status = 'PENDING'
     """, nativeQuery = true)
     int registerPushFailure(@Param("id") Long id, @Param("error") String error);
 
     /**
-     * Claim quyền gửi mail — ATOMIC, chống trùng.
-     * Chỉ 1 luồng (trong 8 worker + reclaimer) giành được:
-     *   affected = 1 → giành được → gửi mail
-     *   affected = 0 → thua (luồng khác đang gửi) → bỏ qua
+     * Claim quyền xử lí 1 event
+     * Chỉ 1 luồng giành được quyền này:
+     * - affected = 1; giành được quyền xử lí event
+     * - affected = 0; luồng khác giành được quyền, bỏ qua
      */
     @Modifying
-    @Query("UPDATE Outbox o SET o.status = 'PROCESSING'"
-            + " WHERE o.id = :id AND o.status IN ('PENDING', 'QUEUED')")
+    @Query(value = """
+        UPDATE Outbox o SET o.status = 'PROCESSING'
+        WHERE o.id = :id AND o.status IN ('PENDING', 'QUEUED')
+    """)
     int claimProcessing(@Param("id") Long id);
 
     /**
-     * PROCESSING → SENT — CHỈ consumer được gọi, sau khi mail gửi THẬT SỰ thành công.
-     *
-     * WHERE status = 'PROCESSING': chỉ luồng đã claim mới được đặt SENT.
+     * PROCESSING -> SENT, chỉ consumer được gọi sau khi event được xử lí thành công,
+     * và chỉ luồng đã ở trạng thái PROCESSING mới được cập nhật qua SENT.
      */
     @Modifying
-    @Query("UPDATE Outbox o SET o.status = 'SENT', o.lastError = NULL"
-            + " WHERE o.id = :id AND o.status = 'PROCESSING'")
+    @Query("""
+        UPDATE Outbox o SET o.status = 'SENT', o.lastError = NULL
+        WHERE o.id = :id AND o.status = 'PROCESSING'
+    """)
     int markSent(@Param("id") Long id);
 
     /**
-     * Gửi mail thất bại → revert PROCESSING → PENDING để retry.
-     * Chỉ revert nếu vẫn còn PROCESSING (chưa bị luồng khác đụng).
+     * Đổi status từ PROCESSING về PENDING khi xử lí event thất bại
      */
     @Modifying
-    @Query("UPDATE Outbox o SET o.status = 'PENDING'"
-            + " WHERE o.id = :id AND o.status = 'PROCESSING'")
+    @Query("""
+        UPDATE Outbox o SET o.status = 'PENDING'
+        WHERE o.id = :id AND o.status = 'PROCESSING'
+    """)
     int revertToPending(@Param("id") Long id);
 
     /**
-     * Chỉ ghi lỗi gửi mail gần nhất vào last_error — vd "SMTP timeout".
-     * KHÔNG tăng retry_count: số lần gửi lại do Redis đếm (deliveryCount),
-     * PendingReclaimer dựa vào số đó. DB đếm thêm là đếm kép.
+     * Ghi lỗi xử lí event vào last_error để tra cứu.
      */
     @Modifying
-    @Query("UPDATE Outbox o SET o.lastError = :error WHERE o.id = :id")
+    @Query("""
+    UPDATE Outbox o SET o.lastError = :error WHERE o.id = :id
+    """)
     void noteProcessingError(@Param("id") Long id, @Param("error") String error);
 
     /**
-     * → FAILED — reclaimer gọi sau khi message đã bị chuyển vào DLQ
-     * (thử gửi đủ max_retries lần vẫn hỏng).
-     *
-     * WHERE status <> 'SENT': trong trường hợp consumer vừa gửi thành công
-     * đúng lúc reclaimer quyết định đưa xuống DLQ, SENT luôn thắng —
-     * không ghi đè kết quả thành công bằng thất bại.
+     * Hết lượt thử (message đã vào DLQ) -> đánh status là FAILED + lưu lí do
+     * WHERE status <> 'SENT': nếu consumer vừa gửi mail thành công đúng
+     * lúc này thì thôi — SENT là kết quả cuối, không ghi đè.
      */
     @Modifying
     @Query("UPDATE Outbox o SET o.status = 'FAILED', o.lastError = :reason"
@@ -517,7 +503,7 @@ public interface OutboxRepository extends JpaRepository<Outbox, Long> {
 | `markSent` | Consumer, sau khi mail OK | PROCESSING → SENT ✅ |
 | `revertToPending` | Consumer, gửi mail fail | PROCESSING → PENDING |
 | `noteProcessingError` | Consumer, ghi lỗi | Chỉ ghi last_error |
-| `markFailed` | Reclaimer, message vào DLQ | → FAILED |
+| `markFailed` | Consumer (hết lượt) + Reclaimer, khi message vào DLQ | → FAILED |
 
 ---
 
@@ -542,7 +528,11 @@ public interface OutboxRepository extends JpaRepository<Outbox, Long> {
 
 ```java
 // common/outbox/event/OutboxSavedEvent.java
-public record OutboxSavedEvent(Long outboxId, Outbox outbox) {}
+public record OutboxSavedEvent(
+        Long outboxId,
+        Outbox outbox
+) {
+}
 ```
 
 ```java
@@ -563,40 +553,24 @@ eventPublisher.publishEvent(new OutboxSavedEvent(saved.getId(), saved));
 `max_retries=5`, `next_retry_at=NULL`. Lỗi serialize là bug lập trình → quăng luôn cho TX
 nghiệp vụ rollback.
 
-**OutboxService** (`@Service @Transactional`):
+**OutboxService** (`@Service` — mỗi method tự khai báo `@Transactional`):
 
 ```java
 // common/outbox/service/OutboxService.java
 @Service
 @RequiredArgsConstructor
 @Slf4j
-@Transactional
 public class OutboxService {
 
     private final OutboxRepository outboxRepository;
     private final ObjectMapper objectMapper;
 
     /**
-     * Ghi 1 email cần gửi vào bảng outbox (trạng thái PENDING).
-     *
-     * Phải gọi BÊN TRONG transaction của nghiệp vụ — vd trong hàm register(),
-     * cùng lúc với việc lưu user. Nhờ vậy user và row email cùng commit
-     * hoặc cùng rollback.
-     *
-     * Sau khi gọi hàm này, caller phải publishEvent(OutboxSavedEvent)
-     * để listener đẩy event vào Redis sau khi commit.
-     *
-     * Ví dụ:
-     *   outboxService.savePending("EMAIL_OTP", "USER", user.getId(),
-     *       Map.of("to", email, "templateName", "email/otp",
-     *              "variables", Map.of("username", username, "otp", otp)));
-     *
-     * Biến Map thành JSON mà lỗi → ném exception cho transaction nghiệp vụ
-     * rollback. Đây là bug lập trình (payload chứa kiểu không serialize được),
-     * nuốt lỗi đồng nghĩa mất email vĩnh viễn.
+     * Ghi 1 event cần xử lí vào bảng outbox (trạng thái PENDING)
      */
+    @Transactional
     public Outbox savePending(String eventType, String aggregateType,
-                              Long aggregateId, Map<String, Object> payload) {
+                                   Long aggregateId, Map<String, Object> payload) {
         try {
             return outboxRepository.save(Outbox.builder()
                             .eventType(eventType)
@@ -606,25 +580,22 @@ public class OutboxService {
                             .status(OutboxStatus.PENDING)
                             .retryCount(0)
                             .maxRetries(5)
-                    .build()
-            );
+                    .build());
         } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Serialize payload failed: " + eventType, e);
+            throw new IllegalStateException("Serial payload failed: " + eventType, e);
         }
     }
 
     /**
-     * PENDING → QUEUED. Gọi ngay sau khi đẩy event vào Redis thành công.
-     * Có 2 nơi gọi: listener (ngay sau commit) và polling scheduler (mỗi 10 giây).
+     *  Đổi status PENDING -> QUEUED. Gọi ngay sau khi đẩy event vào Redis thành công
+     * (listener sau commit hoặc polling mỗi 10 giây).
      *
-     * @return false = row đã được thằng khác chuyển QUEUED trước rồi
-     *         (hai đường cùng đẩy 1 event) — bình thường, không cần làm gì thêm
+     * @return false = thằng khác đã chuyển QUEUED trước rồi (2 đường cùng
+     *         đẩy 1 event) — bình thường, bỏ qua.
      *
-     * @Transactional riêng (không dựa vào class-level): method này được gọi từ
-     * @TransactionalEventListener(AFTER_COMMIT) — lúc đó transaction của request
-     * đã commit & đóng, class-level @Transactional không mở TX mới được.
-     * Nếu thiếu annotation này, @Modifying UPDATE query chạy không có transaction
-     * → TransactionRequiredException "Executing an update/delete query".
+     * Cần @Transactional riêng: method được gọi từ listener AFTER_COMMIT,
+     * lúc đó TX cũ đã đóng - thiếu annotation thì @Modifying UPDATE lỗi
+     * TransactionRequiredException.
      */
     @Transactional
     public boolean markQueued(Long id) {
@@ -632,12 +603,10 @@ public class OutboxService {
     }
 
     /**
-     * Claim quyền gửi mail — ATOMIC, chống trùng.
+     * Claim quyền gửi mail - ATOMIC, chống trùng.
      * PENDING/QUEUED → PROCESSING. Chỉ 1 luồng (trong 8 worker + reclaimer) giành được:
      *   affected = 1 → giành được → gửi mail
      *   affected = 0 → thua (luồng khác đang gửi) → bỏ qua
-     *
-     * @Transactional riêng: consumer gọi từ thread riêng, cần TX cho @Modifying.
      */
     @Transactional
     public boolean claimProcessing(Long id) {
@@ -683,7 +652,22 @@ public class OutboxService {
     }
 
     /**
-     * Ghi nhận 1 lần ĐẨY VÀO REDIS hỏng — polling scheduler gọi khi push lỗi.
+     * → FAILED. Consumer (hết lượt: deliveryCount >= maxRetries) hoặc reclaimer
+     * gọi sau khi message đã bị chuyển vào DLQ — thử đủ lượt vẫn hỏng.
+     *
+     * Guard WHERE status <> 'SENT': consumer vừa gửi mail thành công đúng lúc
+     * thằng kia quyết định đưa message xuống DLQ → SENT luôn thắng, không
+     * ghi đè kết quả thành công bằng thất bại.
+     *
+     * @Transactional riêng: consumer/reclaimer gọi từ thread riêng, cần TX cho @Modifying.
+     */
+    @Transactional
+    public void markFailed(Long id, String reason) {
+        outboxRepository.markFailed(id, reason);
+    }
+
+    /**
+     * Ghi nhận 1 lần ĐẨY VÀO REDIS hỏng - polling scheduler gọi khi push lỗi.
      * Chi tiết nằm trong 1 câu UPDATE ở repository: retry_count + 1,
      * lưu lỗi, hẹn giờ thử lại xa dần (30s → 1p → 2p → 4p).
      * Hỏng đủ 5 lần → row FAILED, thôi thử.
@@ -697,12 +681,8 @@ public class OutboxService {
     }
 
     /**
-     * Lấy tối đa `limit` row PENDING (mail cũ trước) đem đi đẩy vào Redis.
+     * Lấy tối đa limit row PENDING (mail cũ trước) đem đi đẩy vào Redis.
      * Polling scheduler gọi mỗi 10 giây.
-     *
-     * Transaction chỉ sống trong hàm này: SELECT xong là nhả lock và
-     * connection ngay — vòng for đẩy Redis của scheduler chạy bên ngoài,
-     * không giữ DB connection trong lúc chờ Redis.
      */
     @Transactional
     public List<Outbox> lockPendingBatch(int limit) {
@@ -710,7 +690,7 @@ public class OutboxService {
     }
 
     /**
-     * Janitor: chuyển row QUEUED bị kẹt quá N phút về PENDING.
+     * Chuyển row QUEUED bị kẹt quá N phút về PENDING.
      * Phải có transaction vì là @Modifying @Query (UPDATE).
      */
     @Transactional
@@ -720,13 +700,13 @@ public class OutboxService {
 }
 ```
 
-> [!note] Tại sao các method cần `@Transactional` riêng (dù class đã có)
-> Các method `markQueued`, `markSent`, `claimProcessing`, `revertToPending`, `noteProcessingError`,
-> `registerPushFailure`, `requeueStaleQueued` được gọi từ **thread không có transaction context
-> sẵn** (listener `@Async` trên Virtual Thread, consumer trên pool executor, scheduler trên
-> `scheduling-*`). Class-level `@Transactional` không đủ tin cậy trong các ngữ cảnh này — phải
-> khai báo `@Transactional` riêng trên từng method để đảm bảo `@Modifying` UPDATE query luôn
-> chạy trong transaction.
+> [!note] Tại sao không đặt `@Transactional` cấp class — mỗi method tự khai báo
+> Class KHÔNG khai báo `@Transactional` ở cấp class. Các method `markQueued`, `markSent`,
+> `claimProcessing`, `revertToPending`, `noteProcessingError`, `markFailed`, `registerPushFailure`,
+> `requeueStaleQueued` đều tự khai báo `@Transactional` riêng vì chúng được gọi từ **thread không có
+> transaction context sẵn** (listener `@Async` trên Virtual Thread, consumer trên pool executor,
+> scheduler trên `scheduling-*`) — nếu không, `@Modifying` UPDATE query sẽ chạy không transaction
+> và lỗi `TransactionRequiredException`.
 
 ### 5.2 Janitor — cứu row kẹt `QUEUED`
 
@@ -739,16 +719,6 @@ nhận, xem mục 6.
 
 ```java
 // common/outbox/producer/EventStreamProducer.java
-/**
- * Nơi duy nhất đẩy event vào Redis Stream (lệnh XADD).
- *
- * Có 2 thằng gọi class này:
- * - OutboxEventListener — đẩy ngay sau khi transaction commit (đường nhanh)
- * - OutboxPollingScheduler — quét mỗi 10 giây, nhặt row PENDING còn bỏ sót (đường dự phòng)
- *
- * 2 đường cùng đẩy 1 event → stream có 2 bản — vô hại: consumer check
- * status == SENT trước khi gửi, bản trùng tới sau sẽ bị bỏ qua.
- */
 @Component
 @RequiredArgsConstructor
 public class EventStreamProducer {
@@ -757,12 +727,8 @@ public class EventStreamProducer {
     private final OutboxStreamProperties outboxStreamProperties;
 
     /**
-     * Đẩy 1 event vào stream. Thành công → true.
-     * Redis chết / mất kết nối → ném exception cho caller bắt.
-     *
-     * Vì sao không tự bắt lỗi ở đây: mỗi caller xử lí lỗi một kiểu —
-     * listener nuốt lỗi (row giữ PENDING, chờ polling), scheduler thì
-     * tăng retry_count.
+     * Đẩy 1 event vào stream, thành công -> true.
+     * Redis chết / mất kết ối -> ném exception cho caller bắt
      */
     public boolean push(Outbox outbox) {
         Map<String, String> fields = new HashMap<>();
@@ -779,13 +745,9 @@ public class EventStreamProducer {
 
         fields.put("payload", outbox.getPayload());
 
-        // MAXLEN ~ 50000: stream chỉ giữ tối đa ~50k entry, cũ hơn thì Redis tự cắt
-        // để RAM không phình to. Dấu "~" là trim xấp xỉ — có thể cắt nhầm entry
-        // chưa ai đọc. Nếu bị cắt, row DB vẫn còn QUEUED → janitor sau 15 phút
-        // đưa về PENDING đẩy lại (DB mới là nguồn chân truth, stream chỉ là băng chuyền).
-        //
-        // Lưu ý API: MAXLEN là tham số của LỆNH XADD (XAddOptions),
-        // không phải thuộc tính của record — StreamRecords không có withMaxlen().
+        // MAXLEN = 50000: stream chỉ giữ tối đa 50k message, cũ hơn thì redis tự
+        // cắt để không làm phình bộ nhớ. nếu message nào bị bắt mất trong khi chưa
+        // được xử lí thì polling scheduler sẽ quét event và thêm vào stream lại
         return stringRedisTemplate.opsForStream().add(
                 StreamRecords.string(fields).withStreamKey(outboxStreamProperties.streamKey()),
                 RedisStreamCommands.XAddOptions.maxlen(outboxStreamProperties.maxlen())
@@ -797,27 +759,13 @@ public class EventStreamProducer {
 > [!warning] MAXLEN là cơ chế phòng thủ, không phải bảo chứng
 > Trim xấp xỉ (`~`) có thể cắt entry **chưa ai consume** nếu ứ đọng quá 50k. Khi đó row DB
 > vẫn ở `QUEUED` → janitor phát hiện và đẩy lại. DB là nơi lưu chân truth, Stream chỉ là băng
-> chuyền. Lưu ý: `withMaxlen(...)` gắn trực tiếp lên `StreamRecords` là API **không tồn tại** —
-> phải dùng `XAddOptions.maxlen(...)`.
+> chuyền. Lưu ý API: `MAXLEN` là tham số của lệnh `XADD` (`XAddOptions.maxlen(...)`), không phải
+> thuộc tính của record — `StreamRecords` không có `withMaxlen()`.
 
 ### 5.4 Sau-commit push — `OutboxEventListener`
 
 ```java
 // common/outbox/event/OutboxEventListener.java
-/**
- * Đẩy event vào redis ngay sau khi transaction commit.
- *
- * Business service (ví dụ: register) ghi row outbox xong thì phát
- * 1 event OutboxSavedEvent. Class này nghe sự kiện đó - nhưng ko chạy ngay,
- * nó đợi transaction COMMIT thành công rồi mới chạy (AFTER_COMMIT)
- *
- * Vì sao phải đợi commit xong mới chạy -> nếu đẩy event mail ra lên stream
- * trước, trong trường hợp transaction rollback -> consumer gửi otp cho tài
- * khoản chưa bao giờ tồn tại
- *
- * Nếu redis chết luúc đẩy -> bắt lỗi, im lặng, giữ nguyên status là pending
- * -> OutboxPollingScheduler sẽ thử đẩy lại sau.
- */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -826,27 +774,6 @@ public class OutboxEventListener {
     private final EventStreamProducer eventStreamProducer;
     private final OutboxService outboxService;
 
-    /**
-     * Đẩy event vào Redis (XADD), thành công thì đánh dấu row thành queued
-     *
-     * Thứ tự: đẩy vào stream trước, sau đó đánh dấu thành queued sau.
-     * Nếu crash giữa 2 bước -> event đã nằm trong redis nhưng row vẫn pending
-     * -> polling scheduler sẽ đẩy lại lần nữa -> redis có 2 bản trùng -> consumer
-     * check status == SENT và bỏ qua bản trùng.
-     *
-     * Bắt mọi exception, nhưng ko ném exp do transaction ở tầng nghiệp vụ đã kết thúc
-     * , ném lỗi lúc này sẽ ko đuợc rollback.
-     *
-     * @Async("emailTaskExecutor"): chạy trên Virtual Thread riêng, KHÔNG nằm trong
-     * transaction synchronization của request thread. Vì sao bắt buộc:
-     * @TransactionalEventListener(AFTER_COMMIT) mặc định chạy đồng bộ trên thread
-     * của request — lúc đó transaction vừa commit nhưng synchronization vẫn còn
-     * active. Gọi outboxService.markQueued() (cần mở TX mới) từ đó sẽ bị Spring
-     * "join" vào synchronization đã hoàn tất → không mở được TX → @Modifying
-     * UPDATE query chạy không có transaction → TransactionRequiredException
-     * "Executing an update/delete query". Chạy trên thread riêng sẽ thoát khỏi
-     * synchronization đó → markQueued mở TX mới bình thường.
-     */
     @Async("emailTaskExecutor")
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
     public void onSaved(OutboxSavedEvent event) {
@@ -855,7 +782,7 @@ public class OutboxEventListener {
                 markQueuedWithRetry(event.outboxId());
             }
         } catch (Exception e) {
-            // Redis lỗi -> không ném exp, giữ status pending
+            // redis lỗi -> không ném exp, giữ status pending
             log.warn("Push event vào stream sau commit thất bại, polling sẽ xử lí: {}", event.outboxId());
         }
     }
@@ -863,7 +790,7 @@ public class OutboxEventListener {
     /**
      * Đánh dấu QUEUED cho row, thử tối đa 3 lần (cách nhau 200ms -> 400ms -> 600ms)
      *
-     * Tại sao phải retry: lúc này XADD đã thành công - event chắc chắn đã nằm
+     * Tại sao phải retry: lúc này XADD đã push event thành công - event chắc chắn đã nằm
      * trong redis stream. Lỗi db lúc này chỉ là tạm thời (timeout, pool đầy).
      * Thử 3 lần vẫn hỏng thì bỏ: row giữ PENDING, polling scheduler sẽ đẩy lại
      * (chấp nhận trùng event trong stream, consumer sẽ tự loại)
@@ -872,7 +799,7 @@ public class OutboxEventListener {
         for (int attempt = 1; attempt <= 3; attempt++) {
             try {
                 // markQueued trả về true nếu đổi PENDING → QUEUED thành công;
-                // trả false nghĩa là người khác đã đổi trạng thái trước rồi — thôi can thiệp nữa
+                // trả false nghĩa là người khác đã đổi trạng thái trước rồi - thôi can thiệp nữa
                 if (outboxService.markQueued(id)) {
                     log.info("Outbox {} queued ngay sau commit", id);
                 }
@@ -892,6 +819,14 @@ public class OutboxEventListener {
 }
 ```
 
+> [!note] Vì sao `@Async("emailTaskExecutor")` + `AFTER_COMMIT` là bắt buộc
+> `@TransactionalEventListener(AFTER_COMMIT)` mặc định chạy **đồng bộ** trên thread request — lúc
+> đó transaction vừa commit nhưng synchronization vẫn còn active. Gọi `outboxService.markQueued()`
+> (cần mở TX mới) từ đó sẽ bị Spring "join" vào synchronization đã hoàn tất → không mở được TX →
+> `@Modifying` UPDATE query chạy không transaction → `TransactionRequiredException`. Chạy trên
+> Virtual Thread riêng (`emailTaskExecutor`) sẽ thoát khỏi synchronization đó → `markQueued` mở TX
+> mới bình thường.
+
 **📖 Giải thích ba kịch bản:**
 
 1. **Êm đẹp:** XADD OK → mark QUEUED, tổng công vài ms.
@@ -904,71 +839,48 @@ Nguyên tắc xuyên suốt: listener **không bao giờ ném exception lên req
 
 ```java
 // common/outbox/scheduler/OutboxPollingScheduler.java
-/**
- * Fallback publisher - chạy nền mỗi 10 giây để đẩy nhưng event PENDING
- * còn sót ở database vào Redis Stream
- *
- * Hỗ trợ cho OutboxEventListener khi:
- * - Redis chết tại thời đểm commit -> giữ event PENDING
- * - App crash ngay sau khi commit trước khi listener kịp chạy
- * - markQueued thất bại (lỗi DB) -> event vẫn PENDING
- *
- * Vì OutboxEventListener + OutboxPollingScheduler có thể đẩy duplicate vào stream
- * (dual‑path publish), consumer sẽ dedupe bằng check status == SENT trước khi xử lý
- * – đây là at‑least‑once.
- *
- * fixedDelay: đợt trước kết thúc mới tính chu kỳ kế tiếp → không overlap giữa các lần
- * chạy trên cùng một instance.
- */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class OutboxPollingScheduler {
 
-    private final OutboxStreamProperties outboxStreamProperties;
     private final OutboxService outboxService;
+    private final OutboxStreamProperties outboxStreamProperties;
     private final EventStreamProducer eventStreamProducer;
 
     /**
      * Chạy nền mỗi 10 giây.
      *
      * Luồng xử lí:
-     * 1. Janitor: chuyển các sự kiện QUEUED bị kẹt (không được xử lí trong hơn 15p),
-     * thì đưa về trạng thái PENDING để thử đẩy lại
-     * 2. Batch Fetch: lấy tối đa 100 row PENDING (có FOR UPDATE SKIP LOCKED)
-     * 3. Push từng row: XADD vào Stream, thành công -> Mark QUEUED;
-     * thất bại -> registerPushFailure.
+     * - Chuyển các event có trạng thái QUEUED không được xử lí trong 15p về
+     * trạng thái PENDING để thử đẩy lại
+     * - Batch Fetch: lấy tối đa 100 event có status PENDING
+     * - Push từng event vào Stream, nếu thành công thì đánh dấu là QUEUED;
+     * thất bại -> registerFailure
      */
     @Scheduled(fixedDelayString = "${app.outbox.poll-interval-ms:10000}")
     public void pollOutbox() {
-        // Cứu row QUEUED bị kẹt (Redis FLUSHALL, MAXLEN trim, consumer group bị xóa…)
-        // đưa về PENDING để chu kỳ này hoặc chu kỳ sau đẩy lại.
-        // Gọi qua service vì requeueStaleQueued là @Modifying @Query cần transaction.
+        // Chuyển các event có trạng thái QUEUED nhưng ko được xử lí trong 15p
+        // về PENDING
         outboxService.requeueStaleQueued(outboxStreamProperties.staleQueuedMinutes());
 
-        // Batch fetch – TX chỉ sống trong câu SELECT này (vài ms).
-        //    FOR UPDATE SKIP LOCKED: lock row vừa lấy, instance khác bỏ qua row đang bị lock
-        //    → 2 instance chạy song song tự chia batch, không giành việc của nhau.
-        //    Lock được release ngay khi method này return – KHÔNG giữ connection trong vòng for.
+        // Batch Fetch - Lấy ra các event có status PENDING
         List<Outbox> batch = outboxService.lockPendingBatch(outboxStreamProperties.batchSize());
         if (!batch.isEmpty()) {
             log.info("[POLLING] Fetched {} PENDING outbox(es) to push", batch.size());
         }
 
-        // Lặp qua từng event outbox trong batch, sau đó đẩy vào stream
-        // -> Nếu thành công: đánh dấu các event trong db thành QUEUED
-        // -> Nếu thất bại:
+        // Lặp qua từng event trong batch, đẩy vào stream
         for(Outbox outbox : batch) {
             try {
-                // Nêu push thành công vào stream, đổi status event từ pending
-                // sang queued
+                // Push thành công -> đổi status từ pending sang queued
                 if (eventStreamProducer.push(outbox)) {
                     outboxService.markQueued(outbox.getId());
                     log.info("[POLLING] Pushed outbox={} eventType={} → QUEUED", outbox.getId(), outbox.getEventType());
                 }
             } catch (Exception ex) {
-                // push thất bại → ghi nhận lỗi + retry_count++ + backoff (hẹn giờ xa dần)
-                // nếu retry_count đạt max_retries → chuyển FAILED (không thử nữa)
+                // Push thất bại -> ghi nhận lỗi + retry_count++ + backoff hẹn giờ retry xa dần)
+                // nếu retry_count đạt max_retries -> chuyển FAILED (không thử nữa)
                 outboxService.registerPushFailure(outbox.getId(), ex.getMessage());
                 log.warn("[POLLING] Push FAILED outbox={}: {}", outbox.getId(), ex.getMessage());
             }
@@ -982,120 +894,208 @@ public class OutboxPollingScheduler {
 Đây là **`@Configuration`** — định nghĩa 1 `@Bean` (container) + 1 `@EventListener`:
 (1) `@EventListener(ApplicationReadyEvent.class)` kiểm tra stream tồn tại, tạo consumer group,
 xóa dummy entry, rồi start container.
-(2) `@Bean StreamMessageListenerContainer` lắng nghe stream với 8 consumers song song.
+(2) `@Bean StreamMessageListenerContainer` lắng nghe stream với 8 consumers đồng thời.
 
 **Cấu hình container:**
 - `batchSize(1)`: map thẳng vào `COUNT 1` của `XREADGROUP` — mỗi consumer nhận 1 message/lần,
-  8 consumers chia đều backlog, xử lý song song thật.
-- `executor(ThreadPoolTaskExecutor)`: corePoolSize=8, maxPoolSize=8, queueCapacity=100,
-  CallerRunsPolicy. Dùng fixed pool (KHÔNG Virtual Thread) vì consumer gọi Java Mail
-  (dùng synchronized → Virtual Thread bị pinning, mất lợi ích). CallerRunsPolicy đảm bảo
-  nếu queue đầy (100 task) thì thread gọi sẽ chạy task thay vì reject — không mất message.
+  8 consumers chia đều backlog, xử lý đồng thời.
+- `executor(ThreadPoolTaskExecutor)`: corePoolSize=8, maxPoolSize=8, queueCapacity=0
+  (SynchronousQueue — 8 consumer = 8 task poll sống mãi trên 1 thread, không task nào chờ
+  trong queue), CallerRunsPolicy phòng hờ: nếu sau này pool nhận task ngắn hạn mà queue đầy
+  thì caller tự chạy task thay vì reject — không mất task.
 - `pollTimeout(2s)`: `XREADGROUP BLOCK 2000` — idle thì ngủ, có tin dậy trong ≤2s.
 
-**Consumer registration — 8 workers song song:**
+**Consumer registration — 8 workers đồng thời:**
 - Container đăng ký 8 consumer trong cùng group, mỗi consumer có tên riêng:
   `CONSUMER_NAME + "-w0"` .. `CONSUMER_NAME + "-w7"`.
-- Mỗi consumer có PEL riêng, Redis phân phối message round-robin giữa 8 consumer.
-- Cách này tăng throughput hơn dùng executor đơn vì container poll song song.
+- PEL là duy nhất của GROUP (không phải mỗi consumer 1 cái) — mỗi entry trong
+  PEL ghi tên consumer đang giữ message. Redis phân phối message round-robin
+  giữa 8 consumer.
+- So với phương án "1 consumer + executor xử lý đồng thời": đăng ký 8 consumer
+  cho 8 vòng poll (XREADGROUP) chạy đồng thời trên 8 thread của containerExecutor —
+  cả khâu lấy message lẫn xử lý đều đồng thời, poll không thành nút cổ chai 1 message/lần.
 
 **CONSUMER_NAME** — tên instance consumer duy nhất:
 - Được tạo từ `hostname + timestamp base36`, đảm bảo không trùng giữa các instance.
 - Dùng để đăng ký consumer trong group và để PendingReclaimer claim lại message.
 
-**Container bean — full code:**
+**Full code — toàn bộ file `OutboxStreamConfig.java`:**
 
 ```java
 // common/outbox/config/OutboxStreamConfig.java
-@Bean(destroyMethod = "stop")
-StreamMessageListenerContainer<String, MapRecord<String, String, String>> container(
-    RedisConnectionFactory redisConnectionFactory,
-    EventStreamConsumer consumer
-) {
-    // Số lượng consumer song song — nên bằng số core hoặc 8 để tối ưu
-    int workers = 8;
+package com.example.boilerplate.common.outbox.config;
 
-    // Executor pool: mỗi consumer chạy trên thread riêng → xử lý song song thật.
-    // Dùng fixed thread pool (KHÔNG Virtual Thread) vì consumer gọi Java Mail
-    // (dùng synchronized → Virtual Thread bị pinning, mất lợi ích).
-    ThreadPoolTaskExecutor containerExecutor = new ThreadPoolTaskExecutor();
-    containerExecutor.setCorePoolSize(workers);
-    containerExecutor.setMaxPoolSize(workers);
-    containerExecutor.setQueueCapacity(100); // hàng đợi giới hạn kích thước tối đa 100
-    containerExecutor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
-    containerExecutor.initialize();
+import com.example.boilerplate.common.outbox.consumer.EventStreamConsumer;
+import io.lettuce.core.RedisBusyException;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.ApplicationContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.context.event.EventListener;
+import org.springframework.data.redis.RedisSystemException;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.connection.stream.Consumer;
+import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.connection.stream.ReadOffset;
+import org.springframework.data.redis.connection.stream.RecordId;
+import org.springframework.data.redis.connection.stream.StreamOffset;
+import org.springframework.data.redis.connection.stream.StreamRecords;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.stream.StreamMessageListenerContainer;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
-    var options = StreamMessageListenerContainer.StreamMessageListenerContainerOptions.builder()
-            .pollTimeout(Duration.ofMillis(properties.pollTimeoutMs()))
-            .batchSize(1)                    // COUNT=1 cho XREADGROUP → mỗi consumer nhận 1 message/lần
-            .executor(containerExecutor)      // 8 threads cho 8 consumers → song song thật
-            .errorHandler(t -> log.error("Stream poll error", t))
-            .build();
+import java.net.InetAddress;
+import java.time.Duration;
+import java.util.Map;
+import java.util.concurrent.ThreadPoolExecutor;
 
-    var container = StreamMessageListenerContainer.create(redisConnectionFactory, options);
+@Slf4j
+@Configuration
+@RequiredArgsConstructor
+public class OutboxStreamConfig {
 
-    // Đăng ký nhiều consumer với tên khác nhau trong cùng group.
-    // Mỗi consumer có PEL riêng, Redis chia message cho các consumer.
-    // Cách này tăng throughput hơn dùng executor vì container poll song song.
-    for (int i = 0; i < workers; i++) {
-        String workerName = CONSUMER_NAME + "-w" + i;
-        container.receive(
-                Consumer.from(properties.consumerGroup(), workerName),
-                StreamOffset.create(properties.streamKey(), ReadOffset.lastConsumed()),
-                consumer
-        );
-    }
+    /**
+     * Tên consumer của instance hiện tại: hostname + timestamp base36,
+     * đảm bảo duy nhất giữa các instance. Dùng để đăng kí consumer trong group và
+     * để PendingReclaimer claim lại message.
+     */
+    public static final String CONSUMER_NAME = buildConsumerName();
+    private final StringRedisTemplate redisTemplate;
+    private final ApplicationContext applicationContext;
+    private final OutboxStreamProperties outboxStreamProperties;
 
-    // KHÔNG start() ở đây — chờ onAppReady() tạo group xong mới start
-    return container;
-}
-```
 
-**Startup sequence (`onAppReady()`):**
-
-```java
-@EventListener(ApplicationReadyEvent.class)
-public void onAppReady() {
-    String streamKey = properties.streamKey();
-    String consumerGroup = properties.consumerGroup();
-
-    // 1. Đảm bảo stream key tồn tại
-    //    Nếu stream chưa có → tạo bằng XADD dummy entry, lưu ID để xóa sau
-    //    Nếu stream đã có → bỏ qua (XINFO thành công)
-    RecordId dummyId = null;
-    try {
-        redisTemplate.opsForStream().info(streamKey);
-    } catch (RedisSystemException e) {
-        dummyId = redisTemplate.opsForStream().add(
-                StreamRecords.string(Map.of("_", "_")).withStreamKey(streamKey));
-        log.info("Stream '{}' created (was missing)", streamKey);
-    }
-
-    // 2. Tạo consumer group (nếu đã có thì BUSYGROUP → bỏ qua)
-    try {
-        redisTemplate.opsForStream().createGroup(
-                streamKey, ReadOffset.from("0"), consumerGroup);
-        log.info("Consumer group '{}' created on stream '{}'",
-                consumerGroup, streamKey);
-    } catch (RedisSystemException ex) {
-        // BUSYGROUP bị wrap trong RedisSystemException → check root cause
-        if (ex.getCause() instanceof RedisBusyException) {
-            log.info("Consumer group '{}' already exists", consumerGroup);
-        } else {
-            throw ex;
+    private static String buildConsumerName() {
+        String host;
+        try {
+            host = InetAddress.getLocalHost().getHostName();
+        } catch (Exception e) {
+            host = "unknown";
         }
+
+        return host + ":" + Long.toString(System.currentTimeMillis(), 36);
     }
 
-    // 2b. Xóa dummy entry nếu vừa tạo (consumer đọc phải thì crash)
-    if (dummyId != null) {
-        redisTemplate.opsForStream().delete(streamKey, dummyId);
+    /**
+     * Tạo container lắng nghe stream với chế độ manual ACK.
+     * Sử dụng nhiều consumer trong cùng group để xử lí đồng thời,
+     * mỗi consumer có tên riêng, Redis phân phối message round-robin
+     *
+     * @Bean(destroyMethod = "stop") đảm bảo container stop khi app shutdown
+     */
+    @Bean(destroyMethod = "stop")
+    StreamMessageListenerContainer<String, MapRecord<String, String, String>> container(
+            RedisConnectionFactory redisConnectionFactory,
+            EventStreamConsumer consumer,
+            OutboxStreamProperties outboxStreamProperties) {
+        // Số lượng worker consumer chạy đồng thời (hardcode 8, không tự suy từ số core)
+        int workers = 8;
+
+        ThreadPoolTaskExecutor containerExecutor = new ThreadPoolTaskExecutor();
+        containerExecutor.setCorePoolSize(workers);
+        containerExecutor.setMaxPoolSize(workers);
+        // 8 consumer = 8 task poll, mỗi task sống mãi trên 1 thread -> không có task
+        // nào chờ trong queue. Để 0 cho đúng thực tế (queueCapacity=0 → SynchronousQueue);
+        // queue chỉ có ý nghĩa nếu sau này có task ngắn hạn được nộp vào pool này.
+        containerExecutor.setQueueCapacity(0);
+
+        // Phòng hờ: nếu sau này pool này nhận task ngắn hạn, queue đầy thì caller
+        // tự chạy task thay vì reject (không mất task). Với 8 task poll hiện tại
+        // thì handler này không bao giờ kích hoạt.
+        containerExecutor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+        containerExecutor.initialize();
+
+        var options = StreamMessageListenerContainer.StreamMessageListenerContainerOptions.builder()
+                .pollTimeout(Duration.ofMillis(outboxStreamProperties.pollTimeoutMs()))
+                .batchSize(1) // COUNT = 1 cho XREADGROUP -> mỗi consumer nhận 1 message/ 1 lần
+                .executor(containerExecutor)   // phân phối 8 thread cho 8 consumer chạy đồng thời
+                .errorHandler(t -> log.error("Stream poll error", t))
+                .build();
+
+        // Tạo container
+        var container = StreamMessageListenerContainer.create(redisConnectionFactory, options);
+
+        // Đăng kí nhiều consumer với tên khác nhau trong cùng 1 group.
+        // Lưu ý: PEL là của GROUP — 1 PEL duy nhất cho cả group, không phải
+        // mỗi consumer 1 cái. Mỗi entry trong PEL chỉ ghi tên consumer đang
+        // giữ message. Tên consumer khác nhau để Redis chia message
+        // round-robin giữa các consumer trong group.
+        for (int i = 0; i < workers; i++) {
+            String workerName = CONSUMER_NAME + "-w" + i;
+            // Mỗi lần receive() đăng kí 1 consumer trong group → tạo 1 task poll,
+            // chiếm 1 thread cố định (8 consumer = 8 thread). Tên consumer khác nhau
+            // để Redis chia message round-robin giữa các consumer trong group.
+            // ReadOffset.lastConsumed(): đọc tiếp từ message chưa xử lí gần nhất của
+            // consumer này — không đọc lại message cũ đã XACK.
+            container.receive(
+                    Consumer.from(outboxStreamProperties.consumerGroup(), workerName),
+                    StreamOffset.create(outboxStreamProperties.streamKey(), ReadOffset.lastConsumed()),
+                    consumer
+            );
+        }
+
+        // KHÔNG start() ở đây — chờ onAppReady() tạo group xong mới start
+        return container;
     }
 
-    // 3. Start container SAU KHI group đã tồn tại
-    StreamMessageListenerContainer<?, ?> container =
-            applicationContext.getBean(StreamMessageListenerContainer.class);
-    container.start();
-    log.info("Outbox stream container started");
+    /**
+     * Chạy SAU KHI app ready (ApplicationReadyEvent).
+     *
+     * Thứ tự thực thi:
+     * 1. Đảm bảo stream key tồn tại (XINFO STREAM, nếu chưa có thì XADD dummy)
+     * 2. Tạo consumer group (nếu đã có thì BUSYGROUP → bỏ qua)
+     * 2b. Xóa dummy entry nếu vừa tạo (consumer đọc phải thì crash)
+     * 3. Start container (bắt đầu poll XREADGROUP)
+     *
+     * Nếu stream bị xóa (Redis restart, eviction, user xóa tay) giữa
+     * lần trước và bây giờ, XREADGROUP sẽ fail NOGROUP.
+     * Vì vậy phải kiểm tra stream key tồn tại TRƯỚC khi tạo group.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void onAppReady() {
+        String streamKey = outboxStreamProperties.streamKey();
+        String consumerGroup = outboxStreamProperties.consumerGroup();
+
+        // 1. Đảm bảo stream key tồn tại
+        //    Nếu stream chưa có → tạo bằng XADD dummy entry, lưu ID để xóa sau
+        //    Nếu stream đã có → bỏ qua (XINFO thành công)
+        RecordId dummyId = null;
+        try {
+            redisTemplate.opsForStream().info(streamKey);
+        } catch (RedisSystemException e) {
+            dummyId = redisTemplate.opsForStream().add(
+                    StreamRecords.string(Map.of("_", "_")).withStreamKey(streamKey));
+            log.info("Stream '{}' created (was missing)", streamKey);
+        }
+
+        // 2. Tạo consumer group (nếu đã có thì BUSYGROUP → bỏ qua)
+        try {
+            redisTemplate.opsForStream().createGroup(
+                    streamKey, ReadOffset.from("0"), consumerGroup);
+            log.info("Consumer group '{}' created on stream '{}'",
+                    consumerGroup, streamKey);
+        } catch (RedisSystemException ex) {
+            // BUSYGROUP bị wrap trong RedisSystemException → check root cause
+            if (ex.getCause() instanceof RedisBusyException) {
+                log.info("Consumer group '{}' already exists", consumerGroup);
+            } else {
+                throw ex;
+            }
+        }
+
+        // 2b. Xóa dummy entry nếu vừa tạo (consumer đọc phải thì crash)
+        if (dummyId != null) {
+            redisTemplate.opsForStream().delete(streamKey, dummyId);
+        }
+
+        // 3. Start container SAU KHI group đã tồn tại
+        StreamMessageListenerContainer<?, ?> container =
+                applicationContext.getBean(StreamMessageListenerContainer.class);
+        container.start();
+        log.info("Outbox stream container started");
+    }
 }
 ```
 
@@ -1111,14 +1111,15 @@ public void onAppReady() {
 // common/outbox/consumer/EventStreamConsumer.java
 /**
  * Consumer chính: nhận message từ Redis Stream (container giao tới),
- * gọi handler gửi mail thật, rồi tự quyết định ACK
+ * gọi handler xử lí event, rồi tự quyết định ACK
  *
- * Luồng xử lí 1 message:
- * 1. Lấy ra outbox trong DB theo outboxId,
- * 2. Nếu outbox đó đã có status SENT -> ACK và bỏ qua (chống gửi mail trùng)
- * 3. Gọi handler theo eventType để gửi mail
- * 4. Thành công -> markSent() rồi mới ACK
- * 5. Thất bại -> ko ACK, chỉ ghi last_error, để message ở lại PEL
+ * Luồng xử lí 1 event:
+ * 1. Claim quyền xử lí event
+ * 2. Nếu claim fail -> ACK và bỏ qua
+ * 3. Kiểm tra deliveryCount >= maxRetries -> hết lượt, chuyển DLQ + markFailed + ACK
+ * 4. Gọi handler theo eventType để xử lí event
+ * 5. Thành công -> markSent() rồi mới ACK
+ * 6. Thất bại -> revertToPending, ko ACK, để message ở lại PEL
  * cho PendingReclaimer xử lí sau (retry hoặc DLQ)
  */
 @Slf4j
@@ -1126,21 +1127,19 @@ public void onAppReady() {
 @RequiredArgsConstructor
 public class EventStreamConsumer implements StreamListener<String, MapRecord<String, String, String>> {
 
-
-
-    private final OutboxRepository outboxRepository;
+    private final OutboxService outboxService;
     private final StringRedisTemplate stringRedisTemplate;
     private final OutboxStreamProperties outboxStreamProperties;
+    private final OutboxRepository outboxRepository;
     private final EventHandlerRegistry eventHandlerRegistry;
-    private final OutboxService outboxService;
 
     /**
      * StreamMessageListenerContainer gọi method này mỗi khi có message mới.
-     * Với 8 consumer (mục 5.6) method này được gọi SONG SONG từ nhiều thread —
-     * instance @Component này được dùng chung, nên phải thread-safe:
-     * - Không giữ state mutable (chỉ inject dependencies)
-     * - Mỗi message xử lý độc lập, không chia sẻ biến giữa các lần gọi
-     *
+     * Với 8 consumer, method này được gọi đồng thời (cũng có lúc song song)
+     * từ nhiều thread - instance @Component này được dùng chung, nên phải
+     * thread-safe:
+     * - Không giữ state mutable
+     * - Mỗi message xử lí độc lập, không chia sẻ biến giữa các lần gọi
      * @param mapRecord Message từ Redis Stream, chứa các field:
      *                  outboxId, eventType, payload, aggregateType, aggregateId
      */
@@ -1149,10 +1148,10 @@ public class EventStreamConsumer implements StreamListener<String, MapRecord<Str
         long outboxId = Long.parseLong(mapRecord.getValue().get("outboxId"));
 
         /**
-         * Giành quyền gửi mail — ATOMIC, chống trùng.
-         * PENDING/QUEUED → PROCESSING. Chỉ 1 luồng giành được:
-         *   affected = 1 → giành được → gửi mail
-         *   affected = 0 → thua (luồng khác đang gửi, hoặc đã SENT) → bỏ qua, chỉ ACK
+         * Giành quyền xử lí event bằng cách đổi status từ PENDING/QUEUED -> PROCESSING
+         * Chỉ 1 luồng giành được:
+         * - affected = 1 -> giành được -> xử lí event;
+         * - affected = 0 -> thua (do luồng khác đang xử lí, hoặc đã SENT) -> bỏ qua, chỉ ACK
          */
         if (!outboxService.claimProcessing(outboxId)) {
             log.debug("[OUTBOX] Skip outbox={} (already processing or SENT) → ACK", outboxId);
@@ -1161,12 +1160,29 @@ public class EventStreamConsumer implements StreamListener<String, MapRecord<Str
         }
 
         try {
-            // dispatch theo eventType -> EmailHandler/WebhookHandler
+            // Kiểm tra deliveryCount: nếu message đã bị giao lại quá maxRetries
+            // lần mà chưa XACK → hết lượt thử, chuyển DLQ luôn, không cố xử lý nữa.
+            // Tránh lãng phí 1 lần gửi mail nữa khi biết trước sẽ fail.
+            long deliveryCount = getDeliveryCount(mapRecord);
+            int maxRetries = outboxRepository.findById(outboxId)
+                    .map(Outbox::getMaxRetries).orElse(5);
+
+            if (deliveryCount >= maxRetries) {
+                log.warn("[OUTBOX] outbox={} deliveryCount({}) >= maxRetries({}) → DLQ",
+                        outboxId, deliveryCount, maxRetries);
+                sendToDlq(mapRecord);
+                outboxService.markFailed(outboxId,
+                        "Exceeded max deliveries (" + deliveryCount + ")");
+                acknowledge(mapRecord);
+                return;
+            }
+
+            // dispatch theo eventType -> EmailHandler/DoSomeThingHandler
             String eventType = mapRecord.getValue().get("eventType");
             log.info("[OUTBOX] Processing outbox={} eventType={}", outboxId, eventType);
 
             eventHandlerRegistry.getByEventType(eventType)
-                            .handle(mapRecord.getValue().get("payload"));
+                    .handle(mapRecord.getValue().get("payload"));
 
             // Cập nhật status của event thành SENT nếu xử lí thành công
             outboxService.markSent(outboxId);
@@ -1174,15 +1190,44 @@ public class EventStreamConsumer implements StreamListener<String, MapRecord<Str
             acknowledge(mapRecord);
             log.info("[OUTBOX] SUCCESS outbox={} eventType={} → SENT + ACK", outboxId, eventType);
         } catch (Exception e) {
-            // Gửi mail thất bại → revert PROCESSING về PENDING để reclaimer retry.
+            // Xử lí event thất bại -> revert PROCESSING về PENDING để reclaimer retry.
             // Không ACK — message nằm lại PEL chờ reclaimer claim (min-idle reclaimIdleMs).
             log.error("Handle fail out={} - revert to PENDING, chờ reclaimer", outboxId, e);
             outboxService.revertToPending(outboxId);
             outboxService.noteProcessingError(outboxId, e.getMessage());
-            // Lưu ý: không rethrow exception ở đây.
-            // Rethrow sẽ làm container log lỗi lặp và nếu PendingReclaimer gọi onMessage()
-            // trực tiếp, exception sẽ thoát khỏi vòng lặp reclaim(), khiến các entry còn lại bị bỏ sót.
         }
+    }
+
+    /**
+     * Lấy deliveryCount từ PEL — số lần Redis đã giao message này cho consumer
+     * mà chưa nhận XACK. Dùng XPENDING tra theo message ID.
+     */
+    private long getDeliveryCount(MapRecord<String, String, String> mapRecord) {
+
+        var pending = stringRedisTemplate.opsForStream().pending(
+                outboxStreamProperties.streamKey(),
+                outboxStreamProperties.consumerGroup(),
+                Range.just(mapRecord.getId().getValue()), // start = end = ID message đang check
+                1);                             // count: range chỉ 1 ID nên tối đa 1 message khớp, để 1 là đủ
+
+        // Nếu có pending thì lấy ra DeliveryCount của message pending đó
+        if (pending != null && !pending.isEmpty()) {
+            return pending.get(0).getTotalDeliveryCount();
+        }
+
+        return 0;
+    }
+
+    /**
+     * Chuyển message sang DLQ (dead-letter stream) để debug/requeue thủ công.
+     * Giới hạn 10000 entry trong DLQ bằng MAXLEN ~.
+     */
+    private void sendToDlq(MapRecord<String, String, String> mapRecord) {
+        stringRedisTemplate.opsForStream().add(
+                StreamRecords.string(mapRecord.getValue())
+                        .withStreamKey(outboxStreamProperties.dlqStreamKey()),
+                RedisStreamCommands.XAddOptions.maxlen(10000)
+                        .approximateTrimming(true));
     }
 
     private void acknowledge(MapRecord<String, String, String> mapRecord) {
@@ -1192,9 +1237,10 @@ public class EventStreamConsumer implements StreamListener<String, MapRecord<Str
 }
 ```
 
-**📖 Ba lối rẽ trong `onMessage`:**
+**📖 Bốn lối rẽ trong `onMessage`:**
 
-- **Lối vui:** `claimProcessing()` giành được → dispatch handler → gửi SMTP → `markSent` → `acknowledge`. Thứ tự **bắt buộc**: markSent TRƯỚC, XACK SAU.
+- **Lối vui:** `claimProcessing()` giành được → check deliveryCount < maxRetries → dispatch handler → gửi SMTP → `markSent` → `acknowledge`. Thứ tự **bắt buộc**: markSent TRƯỚC, XACK SAU.
+- **Lối hết lượt:** `claimProcessing()` giành được → `deliveryCount >= maxRetries` → chuyển DLQ + `markFailed` + ACK → bỏ qua, không cố xử lý.
 - **Lối trùng:** `claimProcessing()` trả false → chỉ ACK rồi đi.
 - **Lối lỗi:** handler ném exception → `revertToPending()` → không ACK → message ở lại PEL → reclaimer 60s sau nhặt.
 
@@ -1205,7 +1251,7 @@ consumer crash, message **không tự quay lại** — phải có ai "nhặt l�
 
 1. `XPENDING` — liệt kê message chưa ack mà **im lặng quá 60 giây**.
 2. Với mỗi entry, xem `deliveryCount`:
-   - `< max_retries` → `XAUTOCLAIM` → chuyển message sang consumer này, xử lý lại.
+   - `< max_retries` → `XCLAIM` → chuyển message sang consumer này, xử lý lại.
    - `>= max_retries` → XADD sang DLQ + XACK + `markFailed` trong DB.
 
 ```java
@@ -1232,22 +1278,20 @@ public class PendingReclaimer {
     private static final String CONSUMER_NAME = OutboxStreamConfig.CONSUMER_NAME;
     private final StringRedisTemplate stringRedisTemplate;
     private final OutboxStreamProperties outboxStreamProperties;
-    private final EventStreamConsumer eventStreamConsumer;
     private final OutboxRepository outboxRepository;
+    private final EventStreamConsumer eventStreamConsumer;
+    private final OutboxService outboxService;
 
-    /**
-     * Chạy mỗi 30 giây (cấu hình qua app.outbox.reclaim-interval-ms).
-     * Sử dụng fixedDelay: lần chạy tiếp theo bắt đầu sau khi lần trước kết thúc.
-     */
+    // Chạy nền mỗi 30 giây
     @Scheduled(fixedDelayString = "${app.outbox.reclaim-interval-ms:30000}")
-    public void reclaim(){
-
+    public void reclaim() {
         var ops = stringRedisTemplate.opsForStream();
         String streamKey = outboxStreamProperties.streamKey();
         String consumerGroup = outboxStreamProperties.consumerGroup();
 
-        // Lấy tối đa 50 message đang trong PEL (không giới hạn khoảng ID).
-        // Spring API không hỗ trợ lọc theo idle trực tiếp, nên phải lấy toàn bộ và lọc sau.
+        // Lấy tối đa 50 message đang nằm trong PEL (không giới hạn khoảng ID).
+        // Spring API không hỗ trợ lọc theo idle trực tiếp — lấy toàn bộ rồi lọc
+        // ở vòng lặp bên dưới theo reclaimIdleMs (mặc định 60 giây).
         PendingMessages pendings;
         try {
             pendings = ops.pending(streamKey, consumerGroup, Range.unbounded(), 50);
@@ -1268,17 +1312,16 @@ public class PendingReclaimer {
         }
 
         for (PendingMessage pendingMessage : pendings) {
-            // Bỏ qua nếu message vừa mới được deliver (idle < reclaimIdleMs).
-            // Khoảng thời gian này cho phép consumer hiện tại có cơ hội xử lý.
+            // Bỏ qua nếu message vừa mới được deliver (idle < reclaimIdleMs)
             if (pendingMessage.getElapsedTimeSinceLastDelivery().toMillis() < outboxStreamProperties.reclaimIdleMs()) {
                 continue;
             }
 
-            // deliveryCount là số lần Redis đã deliver message này (tăng mỗi lần).
+            // deliveryCount là số lần Redis đã chuyển message này
             long deliveryCount = pendingMessage.getTotalDeliveryCount();
 
-            // XCLAIM: chuyển quyền sở hữu message về consumer hiện tại.
-            // Cần claim trước để đọc được payload (PEL chỉ chứa metadata, không chứa nội dung).
+            // XCLAIM: chuyển quyền sở hữu message này về lại consumer hiện tại
+            // cần claim trước để đọc payload
             List<MapRecord<String, Object, Object>> reclaimed = ops.claim(
                     streamKey, consumerGroup, CONSUMER_NAME,
                     Duration.ofMillis(outboxStreamProperties.reclaimIdleMs()), pendingMessage.getId());
@@ -1290,8 +1333,8 @@ public class PendingReclaimer {
             MapRecord<String, Object, Object> raw = reclaimed.getFirst();
 
             // Ép kiểu từ <String, Object, Object> sang <String, String, String>
-            // vì trên thực tế các giá trị đều là chuỗi (do dùng StringRedisTemplate).
-            // Giữ nguyên ID của entry để XACK có thể xác nhận đúng entry.
+            // Vì thực tế các giá trị đều là chuỗi (do dùng StringRedisTemplate)
+            // giữ nguyên ID của entry để XACK có thể xác nhận đúng entry
             MapRecord<String, String, String> mapRecord = raw
                     .mapEntries(entry -> Map.entry(
                             String.valueOf(entry.getKey()),
@@ -1299,29 +1342,26 @@ public class PendingReclaimer {
                     .withId(raw.getId());
 
             long outboxId = Long.parseLong(mapRecord.getValue().get("outboxId"));
-            // Lấy maxRetries từ outbox row. Mặc định 5 nếu row không tồn tại (phòng trường hợp bị xóa tay).
+
+            // lấy maxRetries từ event. Mặc định là 5 nếu row ko tồn tại
             int maxRetries = outboxRepository.findById(outboxId)
                     .map(Outbox::getMaxRetries).orElse(5);
 
             if (deliveryCount < maxRetries) {
-                // Còn lượt thử: gọi lại consumer để xử lý.
-                // Lưu ý: container (StreamMessageListenerContainer) không tự động nhận
-                // message đã được claim, vì nó chỉ đọc message mới (XREADGROUP >).
-                // Vì vậy phải gọi onMessage trực tiếp.
+                // Còn lượt thử: gọi lại consumer để xử lí
                 eventStreamConsumer.onMessage(mapRecord);
                 log.info("Reclaimed outbox {} (delivery #{})", outboxId, deliveryCount);
             } else {
-                // Đã vượt quá số lần thử tối đa:
-                // 1. Ghi nguyên bản message vào DLQ stream (để debug và requeue thủ công),
-                // nhưng giới hạn 10000 message
-                // 2. Xác nhận (XACK) message khỏi PEL của group.
-                // 3. Cập nhật status của outbox row thành FAILED.
+                // Vượt quá số lần thử tối đa
+                // 1. Ghi nguyên bản message này vào DLQ Stream (giới hạn 10000 messsage)
+                // 2. Xác nhận XACK cho message này khỏi PEL của group
+                // 3. Cập nhật status của outbox row thành FAILED
                 ops.add(StreamRecords.string(mapRecord.getValue())
-                                .withStreamKey(outboxStreamProperties.dlqStreamKey()),
-                        RedisStreamCommands.XAddOptions.maxlen(10000).approximateTrimming(true));
+                        .withStreamKey(outboxStreamProperties.dlqStreamKey()),
+                        RedisStreamCommands.XAddOptions.maxlen(10000).approximateTrimming(true)
+                );
                 ops.acknowledge(streamKey, consumerGroup, pendingMessage.getId());
-                outboxRepository.markFailed(outboxId,
-                        "Exceeded max deliveries (" + deliveryCount + ")");
+                outboxService.markFailed(outboxId, "Exceeded max deliveries (" + deliveryCount + ")");
                 log.error("Outbox {} → DLQ sau {} lần giao", outboxId, deliveryCount);
             }
         }
@@ -1343,31 +1383,24 @@ Registry: map `eventType → EventHandler`, đăng ký bằng constructor inject
 ```java
 // common/outbox/handler/EventHandler.java
 /**
- * Hợp đồng cho các handler xử lý payload của outbox event.
+ * Hợp đồng cho các handler xử lí payload của outbox event
  *
- * EventStreamConsumer dựa vào eventType để lookup handler trong EventHandlerRegistry,
- * sau đó gọi handle() để thực thi logic (ví dụ: gửi email).
- *
- * Quy tắc: nếu handle() ném exception, consumer sẽ KHÔNG ACK entry,
- * entry sẽ nằm lại PEL và được PendingReclaimer xử lý (retry hoặc DLQ).
- * Do đó, handler cần đảm bảo idempotent vì có thể được gọi nhiều lần cho cùng một event.
+ * EventStreamConsumer dựa vào eventType để tìm kiếm handler phù hợp
+ * trong EventHandlerRegistry, sau đó gọi handle() để thực thi logic
  */
 public interface EventHandler {
 
     /**
      * Các event type mà handler này nhận.
      * EventHandlerRegistry sẽ dùng kết quả của method này để xây dựng
-     * routing table (eventType → handler) vào lúc khởi tạo bean.
+     * routing table (eventType -> handler) vào lúc khởi tạo bean
      *
      * @return tập eventType (ví dụ: {"EMAIL_OTP", "EMAIL_WELCOME"})
      */
     Set<String> supportedTypes();
 
     /**
-     * Xử lý payload JSON của event.
-     *
-     * @param payloadJson chuỗi JSON nguyên văn từ outbox.payload
-     * @throws Exception nếu xử lý thất bại — consumer không ACK, entry sẽ được retry hoặc chuyển DLQ
+     * Xử lí payload JSON của event
      */
     void handle(String payloadJson) throws Exception;
 }
@@ -1376,14 +1409,14 @@ public interface EventHandler {
 ```java
 // common/outbox/handler/EventHandlerRegistry.java
 /**
- * Registry ánh xạ eventType → EventHandler.
+ * Registry ánh xạ eventType -> EventHandler
  *
- * Được xây dựng tự động từ tất cả các bean EventHandler trong Spring context.
- * Mỗi handler khai báo tập eventType mình xử lý qua supportedTypes().
+ * Được xây dựng tự động từ tất cả các bean EventHandler trong Spring Context.
+ * Mỗi handler khai báo tập eventType mình xử lí qua supportedTypes().
  *
  * Consumer dùng registry này để dispatch payload tới handler đúng loại.
- * Nếu không tìm thấy handler cho eventType → throw exception → consumer
- * không ACK → entry sẽ bị reclaimer đưa vào DLQ (không bị mất âm thầm).
+ * Nếu không tìm thấy handler cho eventType -> throw Exception -> consumer
+ * không ACK -> entry sẽ bị reclaimer đưa vào DLQ (không bị mất message)
  */
 @Component
 public class EventHandlerRegistry {
@@ -1392,10 +1425,7 @@ public class EventHandlerRegistry {
 
     /**
      * Constructor injection: Spring cung cấp tất cả bean EventHandler.
-     * Registry tự đăng ký từng handler với các eventType nó hỗ trợ.
-     *
-     * Ưu điểm so với @PostConstruct: không phụ thuộc thứ tự init của bean,
-     * dễ test hơn (có thể truyền List tùy chỉnh).
+     * Registry tự đăng kí từng handler với các eventType nó hỗ trợ.
      */
     public EventHandlerRegistry(List<EventHandler> allHandlers) {
         allHandlers.forEach(h -> h.supportedTypes()
@@ -1546,7 +1576,8 @@ public class EmailHandler implements EventHandler {
 | 5 | 2 instance consume bản copy gần đồng thời | Có thể gửi đôi | Cửa sổ hẹp; atomic claim giảm thiểu |
 | 6 | Consumer crash sau gửi mail, trước markSent/ACK | Redelivery | Lần giao lại thấy SENT → chỉ ACK |
 | 7 | Redis flush / MAXLEN trim | Row kẹt QUEUED | Janitor 15 phút救 |
-| 8 | SMTP chết dai dẳng | Retry mãi? | `deliveryCount ≥ max_retries` → DLQ + FAILED |
+| 8 | SMTP chết dai dẳng | Retry mãi? | Consumer check `deliveryCount >= maxRetries` → chuyển DLQ + `markFailed` trước khi cố xử lý |
+| 8b | Consumer và reclaimer cùng thấy `deliveryCount >= maxRetries` | DLQ có bản copy thừa | `markFailed` guard `WHERE status <> 'SENT'` → row DB không bị ghi đè; DLQ thừa vô hại, debug thấy row đã SENT thì bỏ qua |
 | 9 | Stream chưa tồn tại (Redis restart) | Container không poll được | `onAppReady()` tạo stream bằng dummy XADD → tạo group → Xóa dummy → start |
 | 10 | Dummy entry bị consumer đọc | NumberFormatException | `onAppReady()` lưu RecordId, tạo group xong → XDEL dummy |
 
@@ -1682,7 +1713,7 @@ Giai đoạn 1 — xương sống: ✅ ĐÃ HOÀN TẤT
 1. [x] Flyway `V16__create_outbox_table.sql`
 2. [x] Entity `Outbox` + enum `OutboxStatus` + `OutboxRepository`
 3. [x] `OutboxService`: tất cả method (savePending, markQueued, claimProcessing, markSent,
-       revertToPending, noteProcessingError, registerPushFailure, lockPendingBatch, requeueStaleQueued)
+       revertToPending, noteProcessingError, markFailed, registerPushFailure, lockPendingBatch, requeueStaleQueued)
 4. [x] `EventStreamProducer` + `OutboxSavedEvent` + `OutboxEventListener`
 5. [x] `OutboxPollingScheduler` + janitor
 6. [x] `OutboxStreamConfig`: container + onAppReady (stream check + dummy cleanup)
@@ -1720,10 +1751,10 @@ Giai đoạn 3 — vận hành:
 - Luồng vui: register → PENDING → XADD → claim → gửi → SENT + XACK
 - Redis chết lúc push → response 200; Redis sống lại → polling đẩy ≤10s
 - Nhồi 2 bản copy cùng outboxId → `claimProcessing()` atomic → mail đúng 1 lần
-- Consumer crash giả lập → XAUTOCLAIM nhặt lại sau 60s
+- Consumer crash giả lập → XCLAIM nhặt lại sau 60s
 - `deliveryCount` ≥ max → DLQ + FAILED
 - Publish event ngoài TX → listener không chạy
-- 8 consumer song song: 8+ email → parallel, không bỏ sót, không duplicate
+- 8 consumer đồng thời: 8+ email cùng lúc, không bỏ sót, không duplicate
 - Startup sạch: restart khi Redis có data → không NumberFormatError, không NOGROUP
 
 ---
@@ -1744,7 +1775,7 @@ Giai đoạn 3 — vận hành:
 
 ## 11. Kết luận
 
-Kiến trúc **Outbox 5 trạng thái + dual-path push + manual-ACK 8 consumers song song +
+Kiến trúc **Outbox 5 trạng thái + dual-path push + manual-ACK 8 consumers đồng thời +
 reclaimer + janitor** đạt mục tiêu "không mất" với chi phí thấp. `batchSize(1)` đảm bảo phân
 phối công bằng, `claimProcessing()` atomic chống trùng, dummy entry cleanup đảm bảo startup
 sạch. Toàn bộ thành phần test độc lập, rollout 3 giai đoạn không downtime.
@@ -1757,7 +1788,7 @@ sạch. Toàn bộ thành phần test độc lập, rollout 3 giai đoạn khôn
 |---|---|
 | **Transactional Outbox** | Ghi "việc cần làm" vào DB **cùng transaction** với nghiệp vụ — commit cùng sống, rollback cùng chết |
 | **Redis Stream** | Băng chuyền message; mỗi entry có ID tự tăng |
-| **XADD / XREADGROUP / XPENDING / XAUTOCLAIM / XACK** | Đưa việc / nhận mới theo nhóm / liệt kê chưa ký / claim việc kẹt / ký nhận xong |
+| **XADD / XREADGROUP / XPENDING / XCLAIM / XACK** | Đưa việc / nhận mới theo nhóm / liệt kê chưa ký / claim lại message kẹt theo ID / ký nhận xong |
 | **Consumer group** | Tổ nhân viên đọc chung bảng tin; mỗi message đúng 1 người nhận |
 | **PEL** | Pending Entries List — sổ "đã giao nhưng chưa ký nhận" |
 | **Manual ACK** | Làm xong mới ký nhận — chết giữa chừng = mất việc nếu auto-ACK |

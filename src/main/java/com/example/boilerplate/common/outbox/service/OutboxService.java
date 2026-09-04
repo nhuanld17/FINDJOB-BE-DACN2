@@ -16,33 +16,17 @@ import java.util.Map;
 @Service
 @RequiredArgsConstructor
 @Slf4j
-@Transactional
 public class OutboxService {
 
     private final OutboxRepository outboxRepository;
     private final ObjectMapper objectMapper;
 
     /**
-     * Ghi 1 email cần gửi vào bảng outbox (trạng thái PENDING).
-     *
-     * Phải gọi BÊN TRONG transaction của nghiệp vụ — vd trong hàm register(),
-     * cùng lúc với việc lưu user. Nhờ vậy user và row email cùng commit
-     * hoặc cùng rollback.
-     *
-     * Sau khi gọi hàm này, caller phải publishEvent(OutboxSavedEvent)
-     * để listener đẩy event vào Redis sau khi commit.
-     *
-     * Ví dụ:
-     *   outboxService.savePending("EMAIL_OTP", "USER", user.getId(),
-     *       Map.of("to", email, "templateName", "email/otp",
-     *              "variables", Map.of("username", username, "otp", otp)));
-     *
-     * Biến Map thành JSON mà lỗi → ném exception cho transaction nghiệp vụ
-     * rollback. Đây là bug lập trình (payload chứa kiểu không serialize được),
-     * nuốt lỗi đồng nghĩa mất email vĩnh viễn.
+     * Ghi 1 event cần xử lí vào bảng outbox (trạng thái PENDING)
      */
+    @Transactional
     public Outbox savePending(String eventType, String aggregateType,
-                              Long aggregateId, Map<String, Object> payload) {
+                                   Long aggregateId, Map<String, Object> payload) {
         try {
             return outboxRepository.save(Outbox.builder()
                             .eventType(eventType)
@@ -52,25 +36,22 @@ public class OutboxService {
                             .status(OutboxStatus.PENDING)
                             .retryCount(0)
                             .maxRetries(5)
-                    .build()
-            );
+                    .build());
         } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Serialize payload failed: " + eventType, e);
+            throw new IllegalStateException("Serial payload failed: " + eventType, e);
         }
     }
 
     /**
-     * PENDING → QUEUED. Gọi ngay sau khi đẩy event vào Redis thành công.
-     * Có 2 nơi gọi: listener (ngay sau commit) và polling scheduler (mỗi 10 giây).
+     *  Đổi status PENDING -> QUEUED. Gọi ngay sau khi đẩy event vào Redis thành công
+     * (listener sau commit hoặc polling mỗi 10 giây).
      *
-     * @return false = row đã được thằng khác chuyển QUEUED trước rồi
-     *         (hai đường cùng đẩy 1 event) — bình thường, không cần làm gì thêm
+     * @return false = thằng khác đã chuyển QUEUED trước rồi (2 đường cùng
+     *         đẩy 1 event) — bình thường, bỏ qua.
      *
-     * @Transactional riêng (không dựa vào class-level): method này được gọi từ
-     * @TransactionalEventListener(AFTER_COMMIT) — lúc đó transaction của request
-     * đã commit & đóng, class-level @Transactional không mở TX mới được.
-     * Nếu thiếu annotation này, @Modifying UPDATE query chạy không có transaction
-     * → TransactionRequiredException "Executing an update/delete query".
+     * Cần @Transactional riêng: method được gọi từ listener AFTER_COMMIT,
+     * lúc đó TX cũ đã đóng - thiếu annotation thì @Modifying UPDATE lỗi
+     * TransactionRequiredException.
      */
     @Transactional
     public boolean markQueued(Long id) {
@@ -78,12 +59,10 @@ public class OutboxService {
     }
 
     /**
-     * Claim quyền gửi mail — ATOMIC, chống trùng.
+     * Claim quyền gửi mail - ATOMIC, chống trùng.
      * PENDING/QUEUED → PROCESSING. Chỉ 1 luồng (trong 8 worker + reclaimer) giành được:
      *   affected = 1 → giành được → gửi mail
      *   affected = 0 → thua (luồng khác đang gửi) → bỏ qua
-     *
-     * @Transactional riêng: consumer gọi từ thread riêng, cần TX cho @Modifying.
      */
     @Transactional
     public boolean claimProcessing(Long id) {
@@ -129,7 +108,22 @@ public class OutboxService {
     }
 
     /**
-     * Ghi nhận 1 lần ĐẨY VÀO REDIS hỏng — polling scheduler gọi khi push lỗi.
+     * → FAILED. Consumer (hết lượt: deliveryCount >= maxRetries) hoặc reclaimer
+     * gọi sau khi message đã bị chuyển vào DLQ — thử đủ lượt vẫn hỏng.
+     *
+     * Guard WHERE status <> 'SENT': consumer vừa gửi mail thành công đúng lúc
+     * thằng kia quyết định đưa message xuống DLQ → SENT luôn thắng, không
+     * ghi đè kết quả thành công bằng thất bại.
+     *
+     * @Transactional riêng: consumer/reclaimer gọi từ thread riêng, cần TX cho @Modifying.
+     */
+    @Transactional
+    public void markFailed(Long id, String reason) {
+        outboxRepository.markFailed(id, reason);
+    }
+
+    /**
+     * Ghi nhận 1 lần ĐẨY VÀO REDIS hỏng - polling scheduler gọi khi push lỗi.
      * Chi tiết nằm trong 1 câu UPDATE ở repository: retry_count + 1,
      * lưu lỗi, hẹn giờ thử lại xa dần (30s → 1p → 2p → 4p).
      * Hỏng đủ 5 lần → row FAILED, thôi thử.
@@ -143,12 +137,8 @@ public class OutboxService {
     }
 
     /**
-     * Lấy tối đa `limit` row PENDING (mail cũ trước) đem đi đẩy vào Redis.
+     * Lấy tối đa limit row PENDING (mail cũ trước) đem đi đẩy vào Redis.
      * Polling scheduler gọi mỗi 10 giây.
-     *
-     * Transaction chỉ sống trong hàm này: SELECT xong là nhả lock và
-     * connection ngay — vòng for đẩy Redis của scheduler chạy bên ngoài,
-     * không giữ DB connection trong lúc chờ Redis.
      */
     @Transactional
     public List<Outbox> lockPendingBatch(int limit) {
@@ -156,7 +146,7 @@ public class OutboxService {
     }
 
     /**
-     * Janitor: chuyển row QUEUED bị kẹt quá N phút về PENDING.
+     * Chuyển row QUEUED bị kẹt quá N phút về PENDING.
      * Phải có transaction vì là @Modifying @Query (UPDATE).
      */
     @Transactional

@@ -58,7 +58,7 @@ flowchart LR
 
 **Nguyên lý:**
 
-- **Tăng workers** – SMTP là I/O-bound, tăng số luồng song song giúp tận dụng thời gian chờ network.
+- **Tăng workers** – SMTP là I/O-bound, tăng số luồng đồng thời giúp tận dụng thời gian chờ network.
 - **Connection pooling** – giữ kết nối SMTP sống, tái sử dụng cho nhiều mail → bỏ qua handshake và AUTH mỗi lần.
 - **batchSize** – mỗi consumer nhận nhiều hơn 1 message/lần, giảm số lần gọi `XREADGROUP`.
 - **Thymeleaf cache** – tránh parse template mỗi lần (Spring Boot mặc định cache nếu `cache: true`).
@@ -144,7 +144,7 @@ flowchart TD
 | Bước | File | Thay đổi |
 |------|------|----------|
 | 2.1 | `OutboxPollingScheduler.java` | Dùng `executePipelined` để gửi nhiều XADD trong 1 round-trip |
-| 2.2 | `EmailHandler.java` | Wrap `emailService.sendXxx` trong `CompletableFuture.supplyAsync` để song song hóa trong cùng worker |
+| 2.2 | `EmailHandler.java` | Wrap `emailService.sendXxx` trong `CompletableFuture.supplyAsync` để xử lý đồng thời trong cùng worker |
 | 2.3 | `application.yml` | Tăng `spring.mail.properties.mail.smtp.pool.maxtotal` lên 64 |
 
 ### Giai đoạn 3 – Chiến lược dài hạn (3–4 tuần)

@@ -7,14 +7,14 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Registry ánh xạ eventType → EventHandler.
+ * Registry ánh xạ eventType -> EventHandler
  *
- * Được xây dựng tự động từ tất cả các bean EventHandler trong Spring context.
- * Mỗi handler khai báo tập eventType mình xử lý qua supportedTypes().
+ * Được xây dựng tự động từ tất cả các bean EventHandler trong Spring Context.
+ * Mỗi handler khai báo tập eventType mình xử lí qua supportedTypes().
  *
  * Consumer dùng registry này để dispatch payload tới handler đúng loại.
- * Nếu không tìm thấy handler cho eventType → throw exception → consumer
- * không ACK → entry sẽ bị reclaimer đưa vào DLQ (không bị mất âm thầm).
+ * Nếu không tìm thấy handler cho eventType -> throw Exception -> consumer
+ * không ACK -> entry sẽ bị reclaimer đưa vào DLQ (không bị mất message)
  */
 @Component
 public class EventHandlerRegistry {
@@ -23,10 +23,7 @@ public class EventHandlerRegistry {
 
     /**
      * Constructor injection: Spring cung cấp tất cả bean EventHandler.
-     * Registry tự đăng ký từng handler với các eventType nó hỗ trợ.
-     *
-     * Ưu điểm so với @PostConstruct: không phụ thuộc thứ tự init của bean,
-     * dễ test hơn (có thể truyền List tùy chỉnh).
+     * Registry tự đăng kí từng handler với các eventType nó hỗ trợ.
      */
     public EventHandlerRegistry(List<EventHandler> allHandlers) {
         allHandlers.forEach(h -> h.supportedTypes()

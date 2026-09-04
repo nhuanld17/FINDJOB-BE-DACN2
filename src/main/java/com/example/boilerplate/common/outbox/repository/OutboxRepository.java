@@ -9,86 +9,53 @@ import org.springframework.stereotype.Repository;
 
 import java.util.List;
 
-/**
- * Các mutation trạng thái outbox. Mỗi method là một transition của state machine,
- * đều guard bằng điều kiện WHERE trên status hiện tại để đảm bảo idempotent
- * khi có nhiều writer cạnh tranh (listener vs scheduler vs consumer).
- */
 @Repository
-public interface OutboxRepository extends JpaRepository<Outbox, Long> {
+public interface OutboxRepository extends JpaRepository<Outbox,Long> {
 
     /**
-     * Polling batch: SELECT các row PENDING để push vào stream.
-     *
-     * Điều kiện eligibility:
-     * - retry_count < max_retries : loại row đã exceed ngưỡng push-failure
-     * - next_retry_at IS NULL OR <= now() : chưa đến backoff deadline thì skip
-     *
-     * FOR UPDATE SKIP LOCKED: row-level lock, các transaction khác gặp row
-     * đang lock sẽ bỏ qua thay vì block → multi-instance poll không overlap batch
-     * và không serialize nhau. Lock tồn tại trong phạm vi TX của lời gọi này.
+     * Polling batch: SELECT các row PENDING để push vào stream
+     * Chỉ lấy các event có status PENDING, số lần retry chưa đạt ngưỡng
+     * và đã đến hạn retry
      */
     @Query(value = """
-        SELECT * FROM outbox
-        WHERE status = 'PENDING'
-          AND retry_count < max_retries
-          AND (next_retry_at IS NULL OR next_retry_at <= now())
-        ORDER BY created_at
-        LIMIT :limit
-        FOR UPDATE SKIP LOCKED
+    SELECT * FROM outbox
+    WHERE status = 'PENDING'
+        AND retry_count < max_retries
+        AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+    ORDER BY created_at
+    LIMIT :limit
+    FOR UPDATE SKIP LOCKED
     """, nativeQuery = true)
     List<Outbox> lockPendingBatch(@Param("limit") int limit);
 
     /**
-     * Transition PENDING → QUEUED. Guard status='PENDING': nếu row đã được
-     * chuyển bởi writer khác (race giữa fast path và polling), affected rows = 0
-     * → caller hiểu là không cần thao tác thêm. Idempotent.
+     * Đổi status từ PENDING -> QUEUED. Chỉ đổi khi status đang là PENDING
      */
     @Modifying
-        @Query(value = """
+    @Query(value = """
         UPDATE outbox SET status = 'QUEUED', next_retry_at = NULL, last_error = NULL
         WHERE id = :id AND status = 'PENDING'
     """, nativeQuery = true)
     int markQueued(@Param("id") Long id);
 
     /**
-     * Janitor: khôi phục row QUEUED stale về PENDING.
-     * Áp dụng cho các case mất entry phía Redis: FLUSHALL, MAXLEN trim cắt entry
-     * chưa consume, consumer group bị xóa. Điều kiện updated_at < now() - N minutes
-     * để tránh requeue row đang trong quá trình consume hợp lệ.
-     * Side effect: có thể push duplicate vào stream — chấp nhận trong at-least-once.
+     * Event QUEUED quá N phút chưa được xử lí -> khả năng message đã bị mất trong redis
+     * -> Đưa về PENDING để polling đẩy vào Stream lại.
      */
     @Modifying
     @Query(value = """
-        UPDATE outbox SET status = 'PENDING', next_retry_at = now()
-        WHERE status = 'QUEUED' AND updated_at < now() - (:minutes * interval '1 minute')
+        UPDATE outbox SET status = 'PENDING', next_retry_at = NOW()
+        WHERE status = 'QUEUED' and updated_at < NOW() - (:minutes * interval '1 minutes')
     """, nativeQuery = true)
-    int requeueStaleQueued(@Param("minutes") int minutes);
+    int requeueStaleQueued(@Param("minutes")int minutes);
 
     /**
-     * Ghi nhận 1 lần ĐẨY VÀO REDIS THẤT BẠI — polling scheduler gọi khi push lỗi.
+     * Push vào Redis thất bại → đếm 1 lần hỏng (retry_count + 1), lưu lỗi,
+     * hẹn giờ thử lại xa dần (30s → 1p → 2p → 4p...). Hỏng đủ max_retries
+     * lần (mặc định 5) → chuyển FAILED, thôi thử.
      *
-     * Một câu UPDATE làm 3 việc:
-     * 1. retry_count + 1
-     * 2. Lưu lỗi vào last_error (vd "Redis connection timeout")
-     * 3. Hẹn giờ thử lại — mỗi lần hỏng hẹn xa GẤP ĐÔI lần trước:
-     *
-     *      hỏng lần 1 → thử lại sau 30 giây
-     *      hỏng lần 2 → sau 1 phút
-     *      hỏng lần 3 → sau 2 phút
-     *      hỏng lần 4 → sau 4 phút
-     *      hỏng lần 5 → FAILED, thôi thử (mặc định max_retries = 5)
-     *
-     *    Hẹn xa dần để không đánh liên tục vào Redis đang chết — polling chạy
-     *    mỗi 10 giây, không hẹn giờ thì cứ 10s lại dội 1 lần.
-     *    (Trần tối đa 10 phút/lần — chỉ có tác dụng khi max_retries đặt > 5.)
-     *
-     * Lưu ý SQL: CASE so sánh "retry_count + 1" với max_retries, trong đó
-     * retry_count là giá trị CŨ (PostgreSQL đọc giá trị trước khi UPDATE),
-     * nên "+1" chính là số lần hỏng MỚI. Ví dụ: đang 4, max 5 → 4+1=5 ≥ 5 → FAILED.
-     *
-     * WHERE status = 'PENDING': row đã thành QUEUED (instance khác đẩy thành
-     * công rồi) thì câu lệnh không đụng vào — tránh đếm hỏng oan cho row đã xong.
+     * Chỉ đếm khi row còn PENDING: row đã QUEUED nghĩa là thằng khác đẩy
+     * thành công rồi — không tính hỏng oan.
      */
     @Modifying
     @Query(value = """
@@ -96,59 +63,60 @@ public interface OutboxRepository extends JpaRepository<Outbox, Long> {
         SET retry_count = retry_count + 1,
             last_error = :error,
             next_retry_at = CASE WHEN retry_count + 1 >= max_retries THEN NULL
-                                 ELSE now() + least(power(2, retry_count) * interval '30 seconds',
-                                                    interval '10 minutes') END,
+                            ELSE now() + least(power(2, retry_count) * interval '30 seconds',
+                                                interval '10 minutes') END,
             status = CASE WHEN retry_count + 1 >= max_retries THEN 'FAILED' ELSE status END
         WHERE id = :id AND status = 'PENDING'
     """, nativeQuery = true)
     int registerPushFailure(@Param("id") Long id, @Param("error") String error);
 
     /**
-     * Claim quyền gửi mail — ATOMIC, chống trùng.
-     * Chỉ 1 luồng (trong 8 worker + reclaimer) giành được:
-     *   affected = 1 → giành được → gửi mail
-     *   affected = 0 → thua (luồng khác đang gửi) → bỏ qua
+     * Claim quyền xử lí 1 event
+     * Chỉ 1 luồng giành được quyền này:
+     * - affected = 1; giành được quyền xử lí event
+     * - affected = 0; luồng khác giành được quyền, bỏ qua
      */
     @Modifying
-    @Query("UPDATE Outbox o SET o.status = 'PROCESSING'"
-            + " WHERE o.id = :id AND o.status IN ('PENDING', 'QUEUED')")
+    @Query(value = """
+        UPDATE Outbox o SET o.status = 'PROCESSING'
+        WHERE o.id = :id AND o.status IN ('PENDING', 'QUEUED')
+    """)
     int claimProcessing(@Param("id") Long id);
 
     /**
-     * PROCESSING → SENT — CHỈ consumer được gọi, sau khi mail gửi THẬT SỰ thành công.
-     *
-     * WHERE status = 'PROCESSING': chỉ luồng đã claim mới được đặt SENT.
+     * PROCESSING -> SENT, chỉ consumer được gọi sau khi event được xử lí thành công,
+     * và chỉ luồng đã ở trạng thái PROCESSING mới được cập nhật qua SENT.
      */
     @Modifying
-    @Query("UPDATE Outbox o SET o.status = 'SENT', o.lastError = NULL"
-            + " WHERE o.id = :id AND o.status = 'PROCESSING'")
+    @Query("""
+        UPDATE Outbox o SET o.status = 'SENT', o.lastError = NULL
+        WHERE o.id = :id AND o.status = 'PROCESSING'
+    """)
     int markSent(@Param("id") Long id);
 
     /**
-     * Gửi mail thất bại → revert PROCESSING → PENDING để retry.
-     * Chỉ revert nếu vẫn còn PROCESSING (chưa bị luồng khác đụng).
+     * Đổi status từ PROCESSING về PENDING khi xử lí event thất bại
      */
     @Modifying
-    @Query("UPDATE Outbox o SET o.status = 'PENDING'"
-            + " WHERE o.id = :id AND o.status = 'PROCESSING'")
+    @Query("""
+        UPDATE Outbox o SET o.status = 'PENDING'
+        WHERE o.id = :id AND o.status = 'PROCESSING'
+    """)
     int revertToPending(@Param("id") Long id);
 
     /**
-     * Chỉ ghi lỗi gửi mail gần nhất vào last_error — vd "SMTP timeout".
-     * KHÔNG tăng retry_count: số lần gửi lại do Redis đếm (deliveryCount),
-     * PendingReclaimer dựa vào số đó. DB đếm thêm là đếm kép.
+     * Ghi lỗi xử lí event vào last_error để tra cứu.
      */
     @Modifying
-    @Query("UPDATE Outbox o SET o.lastError = :error WHERE o.id = :id")
+    @Query("""
+    UPDATE Outbox o SET o.lastError = :error WHERE o.id = :id
+    """)
     void noteProcessingError(@Param("id") Long id, @Param("error") String error);
 
     /**
-     * → FAILED — reclaimer gọi sau khi message đã bị chuyển vào DLQ
-     * (thử gửi đủ max_retries lần vẫn hỏng).
-     *
-     * WHERE status <> 'SENT': trong trường hợp consumer vừa gửi thành công
-     * đúng lúc reclaimer quyết định đưa xuống DLQ, SENT luôn thắng —
-     * không ghi đè kết quả thành công bằng thất bại.
+     * Hết lượt thử (message đã vào DLQ) -> đánh status là FAILED + lưu lí do
+     * WHERE status <> 'SENT': nếu consumer vừa gửi mail thành công đúng
+     * lúc này thì thôi — SENT là kết quả cuối, không ghi đè.
      */
     @Modifying
     @Query("UPDATE Outbox o SET o.status = 'FAILED', o.lastError = :reason"

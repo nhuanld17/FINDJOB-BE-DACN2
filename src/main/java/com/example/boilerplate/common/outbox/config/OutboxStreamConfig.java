@@ -2,10 +2,8 @@ package com.example.boilerplate.common.outbox.config;
 
 import com.example.boilerplate.common.outbox.consumer.EventStreamConsumer;
 import io.lettuce.core.RedisBusyException;
-
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-
 import org.springframework.boot.context.event.ApplicationReadyEvent;
 import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
@@ -23,43 +21,29 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.stream.StreamMessageListenerContainer;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
-
 import java.net.InetAddress;
 import java.time.Duration;
 import java.util.Map;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
 
-/**
- * Cấu hình phía CONSUME: tạo consumer group và container lắng nghe stream.
- *
- * Khởi tạo consumer group và StreamMessageListenerContainer.
- * Consumer group cho phép nhiều instance cùng đọc stream, mỗi message chỉ
- * được một consumer nhận.
- * Container đăng ký NHIỀU consumer (8 worker) trong cùng group để xử lý song song —
- * Redis phân phối message round-robin cho từng consumer, mỗi consumer gọi onMessage()
- * độc lập trên thread riêng.
- */
 @Slf4j
 @Configuration
 @RequiredArgsConstructor
 public class OutboxStreamConfig {
 
     /**
-     * Tên consumer của instance hiện tại.
-     * Được tạo từ hostname + timestamp base36, đảm bảo duy nhất giữa các instance.
-     * Dùng để đăng ký consumer trong group và để PendingReclaimer claim lại message.
+     * Tên consumer của instance hiện tại: hostname + timestamp base36,
+     * đảm bảo duy nhất giữa các instance. Dùng để đăng kí consumer trong group và
+     * để PendingReclaimer claim lại message.
      */
     public static final String CONSUMER_NAME = buildConsumerName();
-
-    private final OutboxStreamProperties properties;
     private final StringRedisTemplate redisTemplate;
     private final ApplicationContext applicationContext;
+    private final OutboxStreamProperties outboxStreamProperties;
+
 
     private static String buildConsumerName() {
         String host;
-
         try {
             host = InetAddress.getLocalHost().getHostName();
         } catch (Exception e) {
@@ -69,51 +53,60 @@ public class OutboxStreamConfig {
         return host + ":" + Long.toString(System.currentTimeMillis(), 36);
     }
 
-
-
     /**
      * Tạo container lắng nghe stream với chế độ manual ACK.
-     * Sử dụng nhiều consumer trong cùng group để xử lý song song.
-     * Mỗi consumer có tên riêng, Redis phân phối message round-robin.
+     * Sử dụng nhiều consumer trong cùng group để xử lí đồng thời,
+     * mỗi consumer có tên riêng, Redis phân phối message round-robin
      *
      * @Bean(destroyMethod = "stop") đảm bảo container stop khi app shutdown
      */
     @Bean(destroyMethod = "stop")
     StreamMessageListenerContainer<String, MapRecord<String, String, String>> container(
-        RedisConnectionFactory redisConnectionFactory,
-        EventStreamConsumer consumer
-    ) {
-        // Số lượng consumer song song — nên bằng số core hoặc 8 để tối ưu
+            RedisConnectionFactory redisConnectionFactory,
+            EventStreamConsumer consumer,
+            OutboxStreamProperties outboxStreamProperties) {
+        // Số lượng worker consumer chạy đồng thời (hardcode 8, không tự suy từ số core)
         int workers = 8;
 
-        // Executor pool: mỗi consumer chạy trên thread riêng → xử lý song song thật.
-        // Dùng fixed thread pool (KHÔNG Virtual Thread) vì consumer gọi Java Mail
-        // (dùng synchronized → Virtual Thread bị pinning, mất lợi ích).
         ThreadPoolTaskExecutor containerExecutor = new ThreadPoolTaskExecutor();
         containerExecutor.setCorePoolSize(workers);
         containerExecutor.setMaxPoolSize(workers);
-        containerExecutor.setQueueCapacity(100); // hàng đợi giới hạn kích thước tối đã 100
-        // Queue đầy → caller tự chạy task thay vì reject (không mất message)
+        // 8 consumer = 8 task poll, mỗi task sống mãi trên 1 thread -> không có task
+        // nào chờ trong queue. Để 0 cho đúng thực tế (queueCapacity=0 → SynchronousQueue);
+        // queue chỉ có ý nghĩa nếu sau này có task ngắn hạn được nộp vào pool này.
+        containerExecutor.setQueueCapacity(0);
+
+        // Phòng hờ: nếu sau này pool này nhận task ngắn hạn, queue đầy thì caller
+        // tự chạy task thay vì reject (không mất task). Với 8 task poll hiện tại
+        // thì handler này không bao giờ kích hoạt.
         containerExecutor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
         containerExecutor.initialize();
 
         var options = StreamMessageListenerContainer.StreamMessageListenerContainerOptions.builder()
-                .pollTimeout(Duration.ofMillis(properties.pollTimeoutMs()))
-                .batchSize(1)                    // COUNT=1 cho XREADGROUP → mỗi consumer nhận 1 message/lần
-                .executor(containerExecutor)      // 8 threads cho 8 consumers → song song thật
+                .pollTimeout(Duration.ofMillis(outboxStreamProperties.pollTimeoutMs()))
+                .batchSize(1) // COUNT = 1 cho XREADGROUP -> mỗi consumer nhận 1 message/ 1 lần
+                .executor(containerExecutor)   // phân phối 8 thread cho 8 consumer chạy đồng thời
                 .errorHandler(t -> log.error("Stream poll error", t))
                 .build();
 
+        // Tạo container
         var container = StreamMessageListenerContainer.create(redisConnectionFactory, options);
 
-        // Đăng ký nhiều consumer với tên khác nhau trong cùng group.
-        // Mỗi consumer có PEL riêng, Redis chia message cho các consumer.
-        // Cách này tăng throughput hơn dùng executor vì container poll song song.
+        // Đăng kí nhiều consumer với tên khác nhau trong cùng 1 group.
+        // Lưu ý: PEL là của GROUP — 1 PEL duy nhất cho cả group, không phải
+        // mỗi consumer 1 cái. Mỗi entry trong PEL chỉ ghi tên consumer đang
+        // giữ message. Tên consumer khác nhau để Redis chia message
+        // round-robin giữa các consumer trong group.
         for (int i = 0; i < workers; i++) {
             String workerName = CONSUMER_NAME + "-w" + i;
+            // Mỗi lần receive() đăng kí 1 consumer trong group → tạo 1 task poll,
+            // chiếm 1 thread cố định (8 consumer = 8 thread). Tên consumer khác nhau
+            // để Redis chia message round-robin giữa các consumer trong group.
+            // ReadOffset.lastConsumed(): đọc tiếp từ message chưa xử lí gần nhất của
+            // consumer này — không đọc lại message cũ đã XACK.
             container.receive(
-                    Consumer.from(properties.consumerGroup(), workerName),
-                    StreamOffset.create(properties.streamKey(), ReadOffset.lastConsumed()),
+                    Consumer.from(outboxStreamProperties.consumerGroup(), workerName),
+                    StreamOffset.create(outboxStreamProperties.streamKey(), ReadOffset.lastConsumed()),
                     consumer
             );
         }
@@ -137,8 +130,8 @@ public class OutboxStreamConfig {
      */
     @EventListener(ApplicationReadyEvent.class)
     public void onAppReady() {
-        String streamKey = properties.streamKey();
-        String consumerGroup = properties.consumerGroup();
+        String streamKey = outboxStreamProperties.streamKey();
+        String consumerGroup = outboxStreamProperties.consumerGroup();
 
         // 1. Đảm bảo stream key tồn tại
         //    Nếu stream chưa có → tạo bằng XADD dummy entry, lưu ID để xóa sau
