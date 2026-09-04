@@ -11,34 +11,9 @@
 
 > Mục đích thật của nhóm này không phải "tăng mail/s" (SMTP đang nghẽn) mà là **dọn chi phí cố định trên hot path**: mỗi mail hiện tốn 1 lệnh XPENDING + 1 DB SELECT + 2 DB UPDATE + 1 XACK. Khi nào transport mở (nhánh B) thì DB/Redis không được phép thành nghẽn mới — nên phải dọn trước.
 >
-> **Quyết định (2026-09-04): GIỮ check XPENDING trong consumer** — xem §1.1. Thứ thật sự bỏ được trên hot path là 1 DB SELECT/mail (§1.2).
+> Check `deliveryCount` (XPENDING) giữ nguyên — chỉ bỏ được 1 DB SELECT/mail (§1.1).
 
-### 1.1 GIỮ check `deliveryCount` trong `EventStreamConsumer` (quyết định — không xóa)
-
-**Cơ chế hiện tại** — trong `onMessage()`, sau khi `claimProcessing()` giành được quyền:
-1. `getDeliveryCount(mapRecord)` gọi `XPENDING <stream> <group> <id> <id> COUNT 1` → 1 Redis round-trip chỉ để đọc `totalDeliveryCount` của đúng message đang xử lí.
-2. `outboxRepository.findById(outboxId)` → 1 DB SELECT để lấy `maxRetries` (sẽ bỏ ở §1.2).
-3. Nếu `deliveryCount >= maxRetries` → `sendToDlq()` + `markFailed()` + ACK (consumer tự quyết DLQ).
-
-Song song, `PendingReclaimer.reclaim()` (30s/lần) là **kênh duy nhất đưa message trở lại vòng xử lí**:
-- Quét PEL bằng `XPENDING ... Range.unbounded() COUNT 50`, lọc message idle ≥ 60s.
-- `deliveryCount = pendingMessage.getTotalDeliveryCount()` — đọc từ chính kết quả XPENDING, không tốn RTT riêng.
-- `deliveryCount < maxRetries` → `XCLAIM` rồi gọi thẳng `eventStreamConsumer.onMessage(...)`.
-- `deliveryCount >= maxRetries` → DLQ + XACK + `markFailed()`.
-
-**Vì sao GIỮ check (đính chính sau khi phân tích + kiểm chứng):**
-- Message đến tay consumer chỉ qua 2 cửa: (a) lần giao đầu tiên — XREADGROUP của container đọc bằng offset `>` (đã kiểm chứng `ReadOffset.lastConsumed()` = `">"` trong spring-data-redis 3.5.13) nên **không bao giờ giao lại** entry đã nằm PEL; (b) reclaimer `XCLAIM` chuyển vào. Kịch bản "consumer và reclaimer cùng giành 1 message" **không xảy ra được**.
-- Nhưng có một ca biên thật: reclaimer đọc `deliveryCount` **trước** khi `XCLAIM`, mà `XCLAIM` tự **tăng counter thêm 1** (Redis docs) → message được reclaimer cho phép ở mức `maxRetries − 1` đến tay `onMessage` với count đã = `maxRetries`. Check trong consumer kích hoạt **đúng ở ca này**: DLQ luôn, **không gửi** lần SMTP thừa cuối cùng. Bỏ check → mỗi mail doomed (fail mọi lần thử) tốn thêm **1 lần gửi thất bại** rồi mới DLQ ở chu kỳ sau.
-- Cái giá của check: 1 Redis RTT/mail (~0,2ms local) ≈ **< 0,1%** so với chờ SMTP 1,5–5s → chấp nhận được; sang nhánh B (100–300ms/mail) vẫn < 1%.
-- Bonus: check là lưới an toàn nếu sau này xuất hiện kênh redelivery thứ hai quên cổng chặn.
-
-**Triển khai:** không có — giữ nguyên `getDeliveryCount(...)`, khối so sánh `deliveryCount >= maxRetries` và `sendToDlq(...)` trong `EventStreamConsumer`. Chỉ thay nguồn `maxRetries` từ `findById` sang field trong message (§1.2).
-
-**Lỗ hổng đã biết, để ngỏ (không xử lí trong đợt này):** check dựa trên deliveryCount **của từng entry Redis**, mà polling scheduler re-push row `PENDING` mỗi 10s sẽ XADD **entry mới với deliveryCount reset về 1** → `maxRetries` không chặn cứng được *tổng* số lần gửi SMTP thật (chỉ khi reclaimer DLQ một entry sau đủ 5 lần giao thì row mới thành FAILED). Muốn chặn chính xác → đếm lượt thử ở DB trên đường fail (atomic revert + count, FAILED khi hết lượt) — đó là thay đổi đúng đắn về correctness nhưng đổi ngữ nghĩa `retry_count`, nên tách ra quyết định riêng, không trộn vào đợt tối ưu này.
-
-**Kiểm tra:** hành vi không đổi — chạy batch test, XPENDING vẫn xuất hiện trong log; gây lỗi nhân tạo fail liên tục → đúng số lần thử như trước, lần chạm `deliveryCount >= maxRetries` bị chặn và vào DLQ không gửi thêm.
-
-### 1.2 Nhúng `maxRetries` vào message lúc push
+### 1.1 Nhúng `maxRetries` vào message lúc push
 
 **Cơ chế hiện tại:** `EventStreamProducer.push(Outbox outbox)` đã cầm sẵn entity nhưng chỉ XADD `outboxId, eventType, aggregateType, aggregateId, payload`. Cả consumer (`onMessage`) lẫn reclaimer (`reclaim`) sau đó phải `findById(outboxId)` — 1 DB SELECT/message — chỉ để đọc lại `maxRetries` mà lúc push đã có trong tay.
 
@@ -56,13 +31,13 @@ fields.put("maxRetries", String.valueOf(outbox.getMaxRetries()));
 int maxRetries = Integer.parseInt(
         mapRecord.getValue().getOrDefault("maxRetries", "5"));
 ```
-(check `deliveryCount` ở §1.1 vẫn GIỮ NGUYÊN — chỉ thay nguồn `maxRetries` từ `findById` sang field này).
+(check `deliveryCount` giữ nguyên — chỉ thay nguồn `maxRetries` từ `findById` sang field này).
 3. `PendingReclaimer.reclaim()` — cùng cách thay `findById`, xóa dependency `OutboxRepository`/`Outbox`.
 4. **Tương thích message cũ:** entry đã nằm trong stream từ trước (chưa có field `maxRetries`) → `getOrDefault(..., "5")` rơi về mặc định 5 — đúng bằng `maxRetries` trong DB. Không cần migrate dữ liệu cũ.
 
 **Kiểm tra:** bật `show-sql` (đang bật sẵn), chạy batch test → sau mỗi `UPDATE ... status='PROCESSING'` **không còn** `select ... from outbox where id=?`; DLQ vẫn chạy khi message cũ (không field) fail đủ 5 lần.
 
-### 1.3 Workers cấu hình được + HikariCP theo công thức
+### 1.2 Workers cấu hình được + HikariCP theo công thức
 
 **Cơ chế hiện tại:** `OutboxStreamConfig.container()` **hardcode `int workers = 8`** — muốn tăng concurrency phải sửa code. DB pool `maximum-pool-size: 10` được chốt "cho ứng dụng vừa", không tính theo số worker. Mỗi mail hiện đụng DB 2–3 lần UPDATE/SELECT ngắn (vài ms, **ngoài** khoảng chờ SMTP) nên 8 worker không bóp nghẽn pool — nhưng tăng worker mà không tăng pool sẽ gặp `hikaricp.connections.timeout` đúng lúc đang cần gửi nhiều.
 
@@ -75,13 +50,13 @@ int maxRetries = Integer.parseInt(
 
 **Kiểm tra:** đổi `OUTBOX_WORKERS=16` + pool 37 → vẫn start được, 16 thread `-w0..-w15` trong log; batch 100 mail không có connection timeout.
 
-### 1.4 Thymeleaf cache — xác nhận là xong
+### 1.3 Thymeleaf cache — xác nhận là xong
 
 **Cơ chế:** mỗi mail, `EmailService` gọi `templateEngine.process("email/otp", context)` — parse template HTML từ classpath mỗi lần nếu cache tắt. Spring Boot **mặc định `spring.thymeleaf.cache=true`**; `application.yml` (file duy nhất, không có profile khác) không override → **cache đã bật sẵn, không có việc gì để làm**.
 
 **Triển khai:** chỉ kiểm tra lại không ai thêm `spring.thymeleaf.cache: false` khi merge. Không tính mục này vào kỳ vọng hiệu năng (render 1–5ms vs chờ SMTP 1,5–5s).
 
-### 1.5 Gộp claim + XACK — CHỈ khi chuyển `batchSize > 1`
+### 1.4 Gộp claim + XACK — CHỈ khi chuyển `batchSize > 1`
 
 **Cơ chế:** hiện `batchSize=1` → mỗi lần XREADGROUP nhận 1 message → 1 `claimProcessing` UPDATE + 1 XACK. Nếu sau này tăng COUNT lên N thì container **vẫn gọi `onMessage` từng message một, tuần tự trên cùng 1 thread** — nên claim/XACK vẫn rời rạc N lần. Muốn gộp thật phải chuyển sang **batch listener**.
 
@@ -108,9 +83,9 @@ int maxRetries = Integer.parseInt(
 | File | Metric (timer/counter/gauge) | Điểm chèn |
 |---|---|---|
 | `EventStreamProducer.push()` | timer `outbox.push` | bọc toàn bộ body — **1 chỗ duy nhất** đo cả fast path (listener) lẫn polling scheduler |
-| `EventStreamConsumer.onMessage()` | timer `outbox.claim` quanh `claimProcessing`; timer `outbox.commit` quanh `markSent` + `acknowledge`; counter `outbox.email.sent` ở log SUCCESS; counter `outbox.email.failed` ở catch | sau 1.2, `onMessage` = claim → check deliveryCount (XPENDING + so `maxRetries` từ message, giữ cố ý theo §1.1) → handler → markSent/XACK — điểm chèn timer nằm giữa các bước |
+| `EventStreamConsumer.onMessage()` | timer `outbox.claim` quanh `claimProcessing`; timer `outbox.commit` quanh `markSent` + `acknowledge`; counter `outbox.email.sent` ở log SUCCESS; counter `outbox.email.failed` ở catch | sau 1.1, `onMessage` = claim → check deliveryCount (XPENDING + so `maxRetries` từ message, giữ nguyên) → handler → markSent/XACK — điểm chèn timer nằm giữa các bước |
 | `EmailService.sendHtmlEmail()` | timer `outbox.smtp.send` quanh `mailSender.send(mimeMessage)`; counter `outbox.smtp.error.421` khi exception message chứa `"421"` | **1 chỗ duy nhất** — mọi loại mail (OTP/welcome/...) đều chui qua method này |
-| `PendingReclaimer.reclaim()` | counter `outbox.reclaimed` khi XCLAIM ok; counter `outbox.dlq` ở nhánh DLQ | DLQ có 2 nơi quyết: consumer (check §1.1 bắt `deliveryCount >= maxRetries`) và reclaimer — gắn counter `outbox.dlq` ở cả 2 |
+| `PendingReclaimer.reclaim()` | counter `outbox.reclaimed` khi XCLAIM ok; counter `outbox.dlq` ở nhánh DLQ | DLQ có 2 nơi quyết: consumer (check `deliveryCount >= maxRetries`) và reclaimer — gắn counter `outbox.dlq` ở cả 2 |
 | **`OutboxMetrics` (component mới)** | gauge `outbox.backlog` = count row `PENDING + QUEUED`; gauge `outbox.pel` = số message chưa ack | `@Scheduled` 30s/lần: query count (thêm `countByStatusIn` vào `OutboxRepository`), và `opsForStream().pending(streamKey, group).getCount()` (XPENDING dạng summary — rẻ, không liệt kê entry) |
 
 Mẫu chèn timer:
@@ -209,7 +184,7 @@ Chỉ có free tier (~100 mail/ngày) → **không đổi**: thấp hơn cả Gm
 
 ### 4.1 Nhánh B
 
-**Cơ chế:** mỗi stream worker chặn trong 1 lần gửi → **số worker = số request HTTP đang bay**. Không cần executor trung gian: tăng `app.outbox.workers` (mục 1.3) là tăng concurrency gửi, kèm Hikari pool theo công thức.
+**Cơ chế:** mỗi stream worker chặn trong 1 lần gửi → **số worker = số request HTTP đang bay**. Không cần executor trung gian: tăng `app.outbox.workers` (mục 1.2) là tăng concurrency gửi, kèm Hikari pool theo công thức.
 
 **Lưu ý chống gửi trùng:** không tách "claim nhanh → gửi qua queue riêng" — worker sẽ nhả claim PROCESSING nhưng mail chưa gửi; nếu mail nằm queue > `reclaimIdleMs` (60s), reclaimer tưởng chết → XCLAIM gửi lại → trùng. Giữ gửi đồng bộ trong `onMessage` cho tới khi số đo chứng minh cần tách.
 
@@ -221,7 +196,7 @@ Chỉ có free tier (~100 mail/ngày) → **không đổi**: thấp hơn cả Gm
 
 **Triển khai:**
 - Giữ 8 workers; nếu muốn giảm chi phí bắt tay: 1 `SMTPTransport` kết nối dài dùng chung, các worker gửi qua hàng đợi nội bộ (1 thread gửi tuần tự — đúng bản chất Gmail). Tự lo thread-safety (`Transport.sendMessage` không an toàn đa luồng) và Gmail tự đóng khi idle.
-- `batchSize` giữ 1 (xem 1.5).
+- `batchSize` giữ 1 (xem 1.4).
 
 ### 4.3 Tiêu chí qua môn (cả 2 nhánh)
 
@@ -247,9 +222,9 @@ Chạy benchmark N = 100 (mục 2.3): drain đạt chỉ tiêu §1 bản cũ (A:
 | Bước | Làm | Xong khi (đều đo bằng script §2.3) |
 |---|---|---|
 | 0 | §2 đo baseline | con số lặp lại được, có p50/p95/p99 |
-| 1 | §1.2 + §1.3 + §1.4 (§1.1 = quyết định giữ check, không đổi code) | hết `findById` trên hot path (XPENDING giữ cố ý theo §1.1); workers cấu hình được; DLQ/retry không đổi (test lỗi nhân tạo) |
+| 1 | §1.1 + §1.2 (§1.3 chỉ kiểm tra cache) | hết `findById` trên hot path (XPENDING giữ nguyên); workers cấu hình được; DLQ/retry không đổi (test lỗi nhân tạo) |
 | 2 | §3 chốt nhánh A/B; nếu B: MailSender + HttpMailSender | chạy được cả 2 nhánh, metric tách riêng |
 | 3 | §4 nới concurrency theo nhánh | burst 100 mail đạt chỉ tiêu; 421/429 không mất kiểm soát; không vượt quota |
-| 4 | Tùy chọn: 1.5, stream OTP, scale ngang | theo mục tiêu riêng từng mục |
+| 4 | Tùy chọn: 1.4, stream OTP, scale ngang | theo mục tiêu riêng từng mục |
 
 Thứ tự bắt buộc: **0 → 1 → 2 → 3**. Bước 1 làm ngay được, không chờ quyết định transport. Không tối ưu theo cảm tính — mọi bước đối chiếu baseline bước 0.
