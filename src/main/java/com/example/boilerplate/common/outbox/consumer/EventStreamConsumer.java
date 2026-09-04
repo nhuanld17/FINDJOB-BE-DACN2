@@ -70,8 +70,8 @@ public class EventStreamConsumer implements StreamListener<String, MapRecord<Str
             // lần mà chưa XACK → hết lượt thử, chuyển DLQ luôn, không cố xử lý nữa.
             // Tránh lãng phí 1 lần gửi mail nữa khi biết trước sẽ fail.
             long deliveryCount = getDeliveryCount(mapRecord);
-            int maxRetries = outboxRepository.findById(outboxId)
-                    .map(Outbox::getMaxRetries).orElse(5);
+            int maxRetries = Integer.parseInt(
+                    mapRecord.getValue().getOrDefault("maxRetries", "5"));
 
             if (deliveryCount >= maxRetries) {
                 log.warn("[OUTBOX] outbox={} deliveryCount({}) >= maxRetries({}) → DLQ",

@@ -26,6 +26,7 @@ public class EventStreamProducer {
         Map<String, String> fields = new HashMap<>();
         fields.put("outboxId", outbox.getId().toString());
         fields.put("eventType", outbox.getEventType());
+        fields.put("maxRetries", String.valueOf(outbox.getMaxRetries()));
 
         if (outbox.getAggregateType() != null) {
             fields.put("aggregateType", outbox.getAggregateType());
