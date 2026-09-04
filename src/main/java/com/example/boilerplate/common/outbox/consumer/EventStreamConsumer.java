@@ -1,19 +1,17 @@
 package com.example.boilerplate.common.outbox.consumer;
 
 import com.example.boilerplate.common.outbox.config.OutboxStreamProperties;
-import com.example.boilerplate.common.outbox.entity.Outbox;
 import com.example.boilerplate.common.outbox.handler.EventHandlerRegistry;
-import com.example.boilerplate.common.outbox.repository.OutboxRepository;
 import com.example.boilerplate.common.outbox.service.OutboxService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.domain.Range;
 import org.springframework.data.redis.connection.RedisStreamCommands;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.stream.StreamListener;
 import org.springframework.stereotype.Component;
-import org.springframework.data.domain.Range;
 
 /**
  * Consumer chính: nhận message từ Redis Stream (container giao tới),
@@ -36,7 +34,6 @@ public class EventStreamConsumer implements StreamListener<String, MapRecord<Str
     private final OutboxService outboxService;
     private final StringRedisTemplate stringRedisTemplate;
     private final OutboxStreamProperties outboxStreamProperties;
-    private final OutboxRepository outboxRepository;
     private final EventHandlerRegistry eventHandlerRegistry;
 
     /**

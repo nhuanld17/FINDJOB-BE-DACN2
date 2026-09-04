@@ -17,25 +17,40 @@
 
 **Cơ chế hiện tại:** `EventStreamProducer.push(Outbox outbox)` đã cầm sẵn entity nhưng chỉ XADD `outboxId, eventType, aggregateType, aggregateId, payload`. Cả consumer (`onMessage`) lẫn reclaimer (`reclaim`) sau đó phải `findById(outboxId)` — 1 DB SELECT/message — chỉ để đọc lại `maxRetries` mà lúc push đã có trong tay.
 
-**Triển khai:**
+**Triển khai — 4 việc, đánh số theo thứ tự làm:**
 
-1. `EventStreamProducer.push()` — thêm 1 field:
-```java
-fields.put("outboxId", outbox.getId().toString());
-fields.put("eventType", outbox.getEventType());
-fields.put("maxRetries", String.valueOf(outbox.getMaxRetries()));
-// ... aggregateType, aggregateId, payload như cũ
-```
-2. `EventStreamConsumer.onMessage()` — thay 1 lệnh đọc DB (`findById`):
-```java
-int maxRetries = Integer.parseInt(
-        mapRecord.getValue().getOrDefault("maxRetries", "5"));
-```
-(check `deliveryCount` giữ nguyên — chỉ thay nguồn `maxRetries` từ `findById` sang field này).
-3. `PendingReclaimer.reclaim()` — cùng cách thay `findById`, xóa dependency `OutboxRepository`/`Outbox`.
-4. **Tương thích message cũ:** entry đã nằm trong stream từ trước (chưa có field `maxRetries`) → `getOrDefault(..., "5")` rơi về mặc định 5 — đúng bằng `maxRetries` trong DB. Không cần migrate dữ liệu cũ.
+1. **`EventStreamProducer.push()`** — thêm 1 field `maxRetries` vào message:
 
-**Kiểm tra:** bật `show-sql` (đang bật sẵn), chạy batch test → sau mỗi `UPDATE ... status='PROCESSING'` **không còn** `select ... from outbox where id=?`; DLQ vẫn chạy khi message cũ (không field) fail đủ 5 lần.
+   ```java
+   fields.put("outboxId", outbox.getId().toString());
+   fields.put("eventType", outbox.getEventType());
+   fields.put("maxRetries", String.valueOf(outbox.getMaxRetries()));
+   // ... aggregateType, aggregateId, payload như cũ
+   ```
+
+2. **`EventStreamConsumer.onMessage()`** — bỏ `findById`, đọc `maxRetries` từ message:
+
+   ```java
+   int maxRetries = Integer.parseInt(
+           mapRecord.getValue().getOrDefault("maxRetries", "5"));
+   ```
+
+   Check `deliveryCount` giữ nguyên — chỉ thay nguồn `maxRetries` từ `findById` sang field này. `Outbox` + `OutboxRepository` không còn được dùng trong class này → xóa luôn import + field + tham số constructor.
+
+3. **`PendingReclaimer.reclaim()`** — làm y hệt consumer: bỏ `findById`, đọc `maxRetries` từ message:
+
+   ```java
+   // THAY cho: int maxRetries = outboxRepository.findById(outboxId)
+   //                .map(Outbox::getMaxRetries).orElse(5);
+   int maxRetries = Integer.parseInt(
+           mapRecord.getValue().getOrDefault("maxRetries", "5"));
+   ```
+
+   Xóa luôn dependency `OutboxRepository` + `Outbox` (import, field, tham số constructor) — reclaimer không còn đọc DB ở chỗ này.
+
+4. **Tương thích message cũ** — entry đã nằm trong stream từ trước (chưa có field `maxRetries`) → `getOrDefault(..., "5")` rơi về mặc định 5, đúng bằng `maxRetries` trong DB. Không cần migrate dữ liệu cũ.
+
+**Kiểm tra:** bật `show-sql` (đang bật sẵn), chạy batch test → (a) sau mỗi `UPDATE ... status='PROCESSING'` **không còn** `select ... from outbox where id=?`; (b) gây 1 mail fail rồi đợi reclaimer reclaim (idle ≥ 60s) → **đường reclaim cũng không còn** `select ... from outbox where id=?`; (c) DLQ vẫn chạy khi message cũ (không field) fail đủ 5 lần.
 
 ### 1.2 Workers cấu hình được + HikariCP theo công thức
 

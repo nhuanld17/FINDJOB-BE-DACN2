@@ -3,8 +3,6 @@ package com.example.boilerplate.common.outbox.reclaimer;
 import com.example.boilerplate.common.outbox.config.OutboxStreamConfig;
 import com.example.boilerplate.common.outbox.config.OutboxStreamProperties;
 import com.example.boilerplate.common.outbox.consumer.EventStreamConsumer;
-import com.example.boilerplate.common.outbox.entity.Outbox;
-import com.example.boilerplate.common.outbox.repository.OutboxRepository;
 import com.example.boilerplate.common.outbox.service.OutboxService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,7 +29,6 @@ public class PendingReclaimer {
     private static final String CONSUMER_NAME = OutboxStreamConfig.CONSUMER_NAME;
     private final StringRedisTemplate stringRedisTemplate;
     private final OutboxStreamProperties outboxStreamProperties;
-    private final OutboxRepository outboxRepository;
     private final EventStreamConsumer eventStreamConsumer;
     private final OutboxService outboxService;
 
@@ -96,9 +93,9 @@ public class PendingReclaimer {
 
             long outboxId = Long.parseLong(mapRecord.getValue().get("outboxId"));
 
-            // lấy maxRetries từ event. Mặc định là 5 nếu row ko tồn tại
-            int maxRetries = outboxRepository.findById(outboxId)
-                    .map(Outbox::getMaxRetries).orElse(5);
+            // lấy maxRetries từ event
+            int maxRetries = Integer.parseInt(
+                    mapRecord.getValue().getOrDefault("maxRetries", "5"));
 
             if (deliveryCount < maxRetries) {
                 // Còn lượt thử: gọi lại consumer để xử lí

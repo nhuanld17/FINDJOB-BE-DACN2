@@ -16,6 +16,7 @@ public class OutboxTestController {
 
     private final OutboxTestService outboxTestService;
 
+    // curl -X POST http://localhost:8080/api/test/outbox/send
     @PostMapping("/send")
     public Map<String, Object> send() {
         log.info("[TEST] POST /api/test/outbox/send called");
