@@ -10,21 +10,16 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.event.EventListener;
 import org.springframework.data.redis.RedisSystemException;
-import org.springframework.data.redis.connection.RedisConnectionFactory;
-import org.springframework.data.redis.connection.stream.Consumer;
-import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.ReadOffset;
 import org.springframework.data.redis.connection.stream.RecordId;
-import org.springframework.data.redis.connection.stream.StreamOffset;
 import org.springframework.data.redis.connection.stream.StreamRecords;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.data.redis.stream.StreamMessageListenerContainer;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 
 import java.net.InetAddress;
-import java.time.Duration;
 import java.util.Map;
 import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Configuration
@@ -38,9 +33,8 @@ public class OutboxStreamConfig {
      */
     public static final String CONSUMER_NAME = buildConsumerName();
     private final StringRedisTemplate redisTemplate;
-    private final ApplicationContext applicationContext;
+    private final ApplicationContext applicationContext;   // dùng để lấy OutboxWorkerManager
     private final OutboxStreamProperties outboxStreamProperties;
-
 
     private static String buildConsumerName() {
         String host;
@@ -54,65 +48,19 @@ public class OutboxStreamConfig {
     }
 
     /**
-     * Tạo container lắng nghe stream với chế độ manual ACK.
-     * Sử dụng nhiều consumer trong cùng group để xử lí đồng thời,
-     * mỗi consumer có tên riêng, Redis phân phối message round-robin
+     * Bean quản lý vòng đời N worker poll của outbox.
      *
-     * @Bean(destroyMethod = "stop") đảm bảo container stop khi app shutdown
+     * Mỗi worker = 1 task chạy EventStreamConsumer.pollLoop(workerName) trên
+     * 1 thread riêng, tự gọi XREADGROUP COUNT=N rồi xử lí lô.
+     * Bean không tự nộp task: phải gọi start() (từ onAppReady, SAU khi XGROUP
+     * CREATE) thì worker mới bắt đầu — như vậy worker không bao giờ XREADGROUP
+     * trước khi group tồn tại (tránh NOGROUP race lúc startup).
+     * destroyMethod = "stop" → Spring gọi stop() khi app shutdown.
      */
     @Bean(destroyMethod = "stop")
-    StreamMessageListenerContainer<String, MapRecord<String, String, String>> container(
-            RedisConnectionFactory redisConnectionFactory,
-            EventStreamConsumer consumer,
-            OutboxStreamProperties outboxStreamProperties) {
-        // Số lượng worker consumer chạy đồng thời (hardcode 8, không tự suy từ số core)
-        int workers = 8;
-
-        ThreadPoolTaskExecutor containerExecutor = new ThreadPoolTaskExecutor();
-        containerExecutor.setCorePoolSize(workers);
-        containerExecutor.setMaxPoolSize(workers);
-        // 8 consumer = 8 task poll, mỗi task sống mãi trên 1 thread -> không có task
-        // nào chờ trong queue. Để 0 cho đúng thực tế (queueCapacity=0 → SynchronousQueue);
-        // queue chỉ có ý nghĩa nếu sau này có task ngắn hạn được nộp vào pool này.
-        containerExecutor.setQueueCapacity(0);
-
-        // Phòng hờ: nếu sau này pool này nhận task ngắn hạn, queue đầy thì caller
-        // tự chạy task thay vì reject (không mất task). Với 8 task poll hiện tại
-        // thì handler này không bao giờ kích hoạt.
-        containerExecutor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
-        containerExecutor.initialize();
-
-        var options = StreamMessageListenerContainer.StreamMessageListenerContainerOptions.builder()
-                .pollTimeout(Duration.ofMillis(outboxStreamProperties.pollTimeoutMs()))
-                .batchSize(1) // COUNT = 1 cho XREADGROUP -> mỗi consumer nhận 1 message/ 1 lần
-                .executor(containerExecutor)   // phân phối 8 thread cho 8 consumer chạy đồng thời
-                .errorHandler(t -> log.error("Stream poll error", t))
-                .build();
-
-        // Tạo container
-        var container = StreamMessageListenerContainer.create(redisConnectionFactory, options);
-
-        // Đăng kí nhiều consumer với tên khác nhau trong cùng 1 group.
-        // Lưu ý: PEL là của GROUP — 1 PEL duy nhất cho cả group, không phải
-        // mỗi consumer 1 cái. Mỗi entry trong PEL chỉ ghi tên consumer đang
-        // giữ message. Tên consumer khác nhau để Redis chia message
-        // round-robin giữa các consumer trong group.
-        for (int i = 0; i < workers; i++) {
-            String workerName = CONSUMER_NAME + "-w" + i;
-            // Mỗi lần receive() đăng kí 1 consumer trong group → tạo 1 task poll,
-            // chiếm 1 thread cố định (8 consumer = 8 thread). Tên consumer khác nhau
-            // để Redis chia message round-robin giữa các consumer trong group.
-            // ReadOffset.lastConsumed(): đọc tiếp từ message chưa xử lí gần nhất của
-            // consumer này — không đọc lại message cũ đã XACK.
-            container.receive(
-                    Consumer.from(outboxStreamProperties.consumerGroup(), workerName),
-                    StreamOffset.create(outboxStreamProperties.streamKey(), ReadOffset.lastConsumed()),
-                    consumer
-            );
-        }
-
-        // KHÔNG start() ở đây — chờ onAppReady() tạo group xong mới start
-        return container;
+    OutboxWorkerManager outboxWorkerManager(EventStreamConsumer consumer,
+                                            OutboxStreamProperties props) {
+        return new OutboxWorkerManager(consumer, props);
     }
 
     /**
@@ -122,11 +70,10 @@ public class OutboxStreamConfig {
      * 1. Đảm bảo stream key tồn tại (XINFO STREAM, nếu chưa có thì XADD dummy)
      * 2. Tạo consumer group (nếu đã có thì BUSYGROUP → bỏ qua)
      * 2b. Xóa dummy entry nếu vừa tạo (consumer đọc phải thì crash)
-     * 3. Start container (bắt đầu poll XREADGROUP)
+     * 3. Start worker SAU KHI group đã tồn tại
      *
-     * Nếu stream bị xóa (Redis restart, eviction, user xóa tay) giữa
-     * lần trước và bây giờ, XREADGROUP sẽ fail NOGROUP.
-     * Vì vậy phải kiểm tra stream key tồn tại TRƯỚC khi tạo group.
+     * Nếu stream bị xóa giữa 2 lần chạy, XREADGROUP sẽ fail NOGROUP —
+     * kiểm tra stream key TRƯỚC khi tạo group.
      */
     @EventListener(ApplicationReadyEvent.class)
     public void onAppReady() {
@@ -134,8 +81,6 @@ public class OutboxStreamConfig {
         String consumerGroup = outboxStreamProperties.consumerGroup();
 
         // 1. Đảm bảo stream key tồn tại
-        //    Nếu stream chưa có → tạo bằng XADD dummy entry, lưu ID để xóa sau
-        //    Nếu stream đã có → bỏ qua (XINFO thành công)
         RecordId dummyId = null;
         try {
             redisTemplate.opsForStream().info(streamKey);
@@ -152,7 +97,6 @@ public class OutboxStreamConfig {
             log.info("Consumer group '{}' created on stream '{}'",
                     consumerGroup, streamKey);
         } catch (RedisSystemException ex) {
-            // BUSYGROUP bị wrap trong RedisSystemException → check root cause
             if (ex.getCause() instanceof RedisBusyException) {
                 log.info("Consumer group '{}' already exists", consumerGroup);
             } else {
@@ -160,15 +104,75 @@ public class OutboxStreamConfig {
             }
         }
 
-        // 2b. Xóa dummy entry nếu vừa tạo (consumer đọc phải thì crash)
+        // 2b. Xóa dummy entry nếu vừa tạo
         if (dummyId != null) {
             redisTemplate.opsForStream().delete(streamKey, dummyId);
         }
 
-        // 3. Start container SAU KHI group đã tồn tại
-        StreamMessageListenerContainer<?, ?> container =
-                applicationContext.getBean(StreamMessageListenerContainer.class);
-        container.start();
-        log.info("Outbox stream container started");
+        // 3. Bật worker sau khi stream + group đã chắc chắn tồn tại
+        applicationContext.getBean(OutboxWorkerManager.class).start();
+        log.info("Outbox workers started");
+    }
+
+    /**
+     * Quản lý N worker poll: executor chạy pollLoop, start() nộp task sau khi
+     * group đã tạo, stop() tắt cờ + shutdown khi app dừng.
+     */
+    static class OutboxWorkerManager {
+        private final EventStreamConsumer consumer;
+        private final OutboxStreamProperties props;
+        private final ThreadPoolTaskExecutor executor;
+
+        OutboxWorkerManager(EventStreamConsumer consumer, OutboxStreamProperties props) {
+            this.consumer = consumer;
+            this.props = props;
+            int workers = props.workers();
+            executor = new ThreadPoolTaskExecutor();
+            executor.setCorePoolSize(workers);
+            executor.setMaxPoolSize(workers);
+            executor.setQueueCapacity(0);               // không xếp hàng: N worker = N task sống mãi
+            executor.setRejectedExecutionHandler(new ThreadPoolExecutor.CallerRunsPolicy());
+            executor.setThreadNamePrefix("outbox-worker-");
+            executor.initialize();
+        }
+
+        /** Gọi từ onAppReady — SAU khi XGROUP CREATE xong. Idempotent. */
+        public synchronized void start() {
+            if (consumer.isRunning()) {
+                return;
+            }
+            consumer.setRunning(true);                  // pollLoop bắt đầu vào vòng while
+            for (int i = 0; i < props.workers(); i++) {
+                String workerName = CONSUMER_NAME + "-w" + i;
+                executor.execute(() -> {
+                    try {
+                        consumer.pollLoop(workerName);
+                    } catch (Throwable t) {
+                        // pollLoop đã tự try-catch bên trong — tới đây là bất khả kháng
+                        log.error("Outbox worker {} chết", workerName, t);
+                    }
+                });
+            }
+            log.info("Started {} outbox worker(s)", props.workers());
+        }
+
+        /** Spring gọi khi app shutdown (destroyMethod). */
+        public void stop() {
+            consumer.setRunning(false);                 // pollLoop thoát sau lượt XREADGROUP block
+            executor.shutdown();                        // không nhận task mới
+            try {
+                // Worker đang block XREADGROUP tối đa pollTimeoutMs mới thấy cờ tắt,
+                // + thời gian xử lí lô đang dở. 30s đủ cho mặc định (2s + vài ms/lô);
+                // nếu SMTP chậm mà timeout bị chạm → giãn con số này.
+                // ThreadPoolTaskExecutor không expose awaitTermination/shutdownNow
+                // → đi qua ThreadPoolExecutor bên dưới
+                if (!executor.getThreadPoolExecutor().awaitTermination(30, TimeUnit.SECONDS)) {
+                    log.warn("Outbox workers chưa dừng sau 30s, shutdownNow");
+                    executor.getThreadPoolExecutor().shutdownNow();
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
     }
 }

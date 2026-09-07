@@ -17,7 +17,7 @@ package com.example.boilerplate.common.outbox.entity;
  * Sơ đồ chuyển đổi:
  * PENDING -> PROCESSING    - claimProcessing(), atomic, chống trùng
  * PROCESSING -> SENT       - markSent(), sau khi gửi mail OK
- * PROCESSING -> PENDING    - revertToPending(), khi gửi mail fail (để retry)
+ * PROCESSING -> PENDING    - revertToPendingWithError(), khi gửi mail fail (để retry)
  *
  * Không tồn tại quá trình chuyển trạng thái từ QUEUED -> PENDING từ consumer;
  * transition ngược QUEUED <- PENDING chỉ do janitor (requeueStaleQueued) thực hiện.

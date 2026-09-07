@@ -32,6 +32,14 @@ public record OutboxStreamProperties(
         String consumerGroup,
 
         /**
+         * Số lượng worker consumer xử lý đồng thời (container receive trong group).
+         * Xác định corePoolSize/maxPoolSize của ThreadPoolTaskExecutor và số lần
+         * registerReceive đăng ký consumer (-w0..-w(N-1)).
+         * Mặc định: 8
+         */
+        int workers,
+
+        /**
          * Chu kỳ polling scheduler (đường fallback) — đơn vị ms.
          * Mặc định: 10000 (10 giây)
          * Lưu ý: @Scheduled dùng placeholder trực tiếp, field này chỉ để document.
@@ -78,5 +86,7 @@ public record OutboxStreamProperties(
          * Đồng thời là khoảng thời gian tối thiểu giữa các lần retry phía consume.
          * Mặc định: 60000 (60 giây)
          */
-        long reclaimIdleMs
+        long reclaimIdleMs,
+
+        int containerBatchSize
 ) {}

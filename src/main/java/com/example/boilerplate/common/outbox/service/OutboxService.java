@@ -7,6 +7,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,6 +21,7 @@ public class OutboxService {
 
     private final OutboxRepository outboxRepository;
     private final ObjectMapper objectMapper;
+    private final NamedParameterJdbcTemplate jdbcTemplate;
 
     /**
      * Ghi 1 event cần xử lí vào bảng outbox (trạng thái PENDING)
@@ -85,26 +87,20 @@ public class OutboxService {
     }
 
     /**
-     * Gửi mail thất bại → revert PROCESSING → PENDING để retry.
-     * Chỉ revert nếu vẫn còn PROCESSING (chưa bị luồng khác đụng).
+     * Xử lí fail: revert PROCESSING → PENDING để retry + ghi lỗi vào last_error
+     * trong CÙNG 1 transaction (repository gộp 2 UPDATE thành 1 lệnh atomic).
+     *
+     * Trước đây là 2 TX rời (revertToPending + noteProcessingError): lệnh thứ 2
+     * fail là mất note lỗi. Giờ revert + ghi lỗi commit/rollback cùng nhau.
+     *
+     * Chỉ áp dụng khi row vẫn PROCESSING (chưa bị luồng khác đụng — đã SENT thì
+     * thôi, không ghi đè kết quả cuối bằng lỗi).
      *
      * @Transactional riêng: consumer gọi từ thread riêng, cần TX cho @Modifying.
      */
     @Transactional
-    public void revertToPending(Long id) {
-        outboxRepository.revertToPending(id);
-    }
-
-    /**
-     * Ghi nội dung lỗi gần nhất của consumer vào cột last_error để debug.
-     * Không tăng retry - phía redis đã có deliveryCount tự tăng mỗi lần
-     * giao lại message.
-     *
-     * @Transactional riêng: consumer gọi từ thread riêng, cần TX cho @Modifying.
-     */
-    @Transactional
-    public void noteProcessingError(Long id, String error) {
-        outboxRepository.noteProcessingError(id, error);
+    public void revertToPendingWithError(Long id, String error) {
+        outboxRepository.revertToPendingWithError(id, error);
     }
 
     /**
@@ -152,5 +148,23 @@ public class OutboxService {
     @Transactional
     public int requeueStaleQueued(int minutes) {
         return outboxRepository.requeueStaleQueued(minutes);
+    }
+
+    /**
+     * Update status của outbox event hàng loạt , trả về danh sách
+     * id được update thành công.
+     */
+    @Transactional
+    public List<Long> claimProcessingBatch(List<Long> ids) {
+        if (ids.isEmpty()) return List.of();
+        // Postgres: UPDATE ... RETURNING id trả CHÍNH XÁC các id được UPDATE thành công.
+        return jdbcTemplate.queryForList(
+                """
+                UPDATE outbox SET status = 'PROCESSING'
+                WHERE id IN (:ids) AND status IN ('PENDING', 'QUEUED')
+                RETURNING id
+                """,
+                Map.of("ids", ids),
+                Long.class);
     }
 }

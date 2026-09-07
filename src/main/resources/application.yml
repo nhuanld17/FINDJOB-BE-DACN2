@@ -28,8 +28,9 @@ spring:
     # ===== HikariCP Connection Pool =====
     hikari:
       pool-name: FindJobPool
-      # Tối đa 10 connections đồng thời (phù hợp với ứng dụng vừa)
-      maximum-pool-size: 10
+      # Tối đa connections đồng thời. YAML không hỗ trợ biểu thức → chỉnh thủ công
+      # theo workers: pool >= workers*2 + 5 (workers 8 → 21; workers 16 → 37)
+      maximum-pool-size: ${DB_POOL_SIZE:21}
       # Luôn giữ 2 connections sẵn sàng
       minimum-idle: 2
       # 30 giây timeout nếu không lấy được connection khả dụng
@@ -142,6 +143,8 @@ app:
     stream-key: ${OUTBOX_STREAM_KEY:findjob:event-queue}
     dlq-stream-key: ${OUTBOX_DLQ_KEY:findjob:event-dlq}
     consumer-group: ${OUTBOX_GROUP:findjob-workers}
+    # Số worker consumer chạy đồng thời trong container; tăng kèm DB_POOL_SIZE theo công thức pool >= workers*2 + 5
+    workers: ${OUTBOX_WORKERS:8}
     poll-interval-ms: ${OUTBOX_POLL_MS:10000}
     batch-size: ${OUTBOX_BATCH:100}
     maxlen: ${OUTBOX_MAXLEN:50000}
@@ -149,8 +152,18 @@ app:
     reclaim-interval-ms: ${OUTBOX_RECLAIM_MS:30000}
     reclaim-idle-ms: ${OUTBOX_RECLAIM_IDLE_MS:60000}
     poll-timeout-ms: ${OUTBOX_POLL_TIMEOUT_MS:2000}   # BLOCK của XREADGROUP trong container
+    # COUNT XREADGROUP của container — số message nhận mỗi lần poll.
+    # >1 chỉ có tác dụng với đường poll theo lô (§1.4); giữ 1 cho tới khi chốt nhánh B.
+    container-batch-size: ${OUTBOX_CONTAINER_BATCH:1}
 
 cloudinary:
   cloud-name: ${CLOUDINARY_CLOUD_NAME}
   api-key: ${CLOUDINARY_API_KEY}
   api-secret: ${CLOUDINARY_API_SECRET}
+
+mail:
+  http:
+    api-url: ${BREVO_API_URL:https://api.brevo.com/v3/smtp/email}
+    api-key: ${BREVO_API_KEY:}
+    sender-email: ${MAIL_FROM_EMAIL:}
+    sender-name: ${MAIL_FROM_NAME:FindJob}

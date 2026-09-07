@@ -1,11 +1,6 @@
 package com.example.boilerplate.infrastructure.mail;
 
-import jakarta.mail.MessagingException;
-import jakarta.mail.internet.MimeMessage;
 import lombok.RequiredArgsConstructor;
-import org.springframework.mail.javamail.JavaMailSender;
-import org.springframework.mail.javamail.MimeMessageHelper;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.thymeleaf.context.Context;
 import org.thymeleaf.spring6.SpringTemplateEngine;
@@ -14,22 +9,11 @@ import org.thymeleaf.spring6.SpringTemplateEngine;
 @RequiredArgsConstructor
 public class EmailService {
 
-    private final JavaMailSender mailSender;
+    private final MailSender mailSender;
     private final SpringTemplateEngine templateEngine;
 
     public void sendHtmlEmail(String to, String subject, String htmlContent) {
-        try {
-            MimeMessage mimeMessage = mailSender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(mimeMessage, true, "UTF-8");
-
-            helper.setTo(to);
-            helper.setSubject(subject);
-            helper.setText(htmlContent, true);
-            mailSender.send(mimeMessage);
-
-        } catch (MessagingException e) {
-            throw new RuntimeException("Failed to send email to: " + to, e);
-        }
+        mailSender.sendHtmlEmail(to, subject, htmlContent);
     }
 
     public void sendOtpEmail(String to, String username, String otp) {

@@ -95,23 +95,20 @@ public interface OutboxRepository extends JpaRepository<Outbox,Long> {
     int markSent(@Param("id") Long id);
 
     /**
-     * Đổi status từ PROCESSING về PENDING khi xử lí event thất bại
+     * Xử lí event thất bại: revert PROCESSING -> PENDING + ghi lỗi vào last_error
+     * trong CÙNG 1 lệnh UPDATE — tự atomic trong DB, không còn cảnh 2 TX rời
+     * (hồi revertToPending() + noteProcessingError() tách nhau: lệnh thứ 2 fail
+     * là mất note lỗi).
+     *
+     * Guard WHERE status = 'PROCESSING' giống revertToPending() cũ: nếu row đã SENT
+     * (luồng khác gửi thành công đúng lúc) thì thôi — không ghi đè kết quả cuối bằng lỗi.
      */
     @Modifying
     @Query("""
-        UPDATE Outbox o SET o.status = 'PENDING'
+        UPDATE Outbox o SET o.status = 'PENDING', o.lastError = :error
         WHERE o.id = :id AND o.status = 'PROCESSING'
     """)
-    int revertToPending(@Param("id") Long id);
-
-    /**
-     * Ghi lỗi xử lí event vào last_error để tra cứu.
-     */
-    @Modifying
-    @Query("""
-    UPDATE Outbox o SET o.lastError = :error WHERE o.id = :id
-    """)
-    void noteProcessingError(@Param("id") Long id, @Param("error") String error);
+    int revertToPendingWithError(@Param("id") Long id, @Param("error") String error);
 
     /**
      * Hết lượt thử (message đã vào DLQ) -> đánh status là FAILED + lưu lí do
